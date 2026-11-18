@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+dist-ssr/
+*.local
+
+# Rust / Tauri build artifacts
+src-tauri/target/
+src-tauri/WixTools/
+
+# Local Environment Variables (contains private Google Calendar iCal URL)
+.env
+.env.*
+!.env.example
+
+# Editor & OS files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

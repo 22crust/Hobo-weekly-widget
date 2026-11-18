@@ -1,0 +1,66 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --hobo-grid-size: 16px;
+  --hobo-accent-rgb: 201 74 56;
+  --hobo-accent-hex: #C94A38;
+}
+
+html,
+body,
+#root {
+  background: transparent;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  font-family: "DINPro-Light", "DINPro", "DIN Pro", "FF DIN", "DIN Alternate",
+    "Bahnschrift", ui-sans-serif, system-ui, sans-serif;
+  font-weight: 300;
+  color: #383633;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Crisp 1px window outline using inset box-shadow so fractional DPI scaling never clips the right or bottom edge */
+.window-frame-border {
+  box-shadow: inset 0 0 0 1px #B5AFA0;
+}
+
+/* Hobonichi Techo warm graph paper background locked to physical device pixels */
+.hobonichi-grid-bg {
+  background-image:
+    linear-gradient(to right, rgba(185, 179, 166, 0.34) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(185, 179, 166, 0.34) 1px, transparent 1px);
+  background-size: var(--hobo-grid-size, 16px) var(--hobo-grid-size, 16px);
+  background-position: 0 0;
+}
+
+/* Fade out long single-line task titles at the right edge; remove mask on hover */
+.task-fade-mask {
+  mask-image: linear-gradient(to right, #000 82%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to right, #000 82%, transparent 100%);
+}
+
+.group:hover .task-fade-mask {
+  mask-image: none;
+  -webkit-mask-image: none;
+}
+
+/* Minimal warm-paper scrollbars */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(140, 136, 129, 0.32);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(140, 136, 129, 0.55);
+}

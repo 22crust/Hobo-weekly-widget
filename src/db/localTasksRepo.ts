@@ -1,0 +1,811 @@
+import { format, parseISO, startOfWeek, subDays } from "date-fns";
+import { getDatabase, notifyDatabaseUpdated } from "./database";
+import { getAllWeekImages } from "./weekImagesRepo";
+import {
+  CreateLocalTaskInput,
+  LocalTask,
+  UpdateLocalTaskInput,
+  WeekImage,
+} from "../types/planner";
+
+interface RawLocalTaskRow {
+  id: number;
+  title: string;
+  notes: string | null;
+  assigned_date: string | null;
+  assigned_week_start: string | null;
+  is_long_term: number;
+  start_time: string | null;
+  end_time: string | null;
+  is_completed: number;
+  show_in_weekly: number;
+  show_in_sidebar: number;
+  sort_order: number;
+  created_at: string;
+  updated_at?: string;
+  deleted_at?: string | null;
+}
+
+function mapRowToLocalTask(row: RawLocalTaskRow): LocalTask {
+  return {
+    ...row,
+    is_long_term: Boolean(row.is_long_term),
+    is_completed: Boolean(row.is_completed),
+    show_in_weekly: Boolean(row.show_in_weekly),
+    show_in_sidebar: Boolean(row.show_in_sidebar),
+    updated_at: row.updated_at || row.created_at || "1970-01-01T00:00:00.000Z",
+    deleted_at: row.deleted_at ?? null,
+  };
+}
+
+/**
+ * Returns whichever timestamp (`updated_at` vs. `deleted_at`) is newest for a task or sticker.
+ */
+export function getEffectiveTimestamp(item: {
+  updated_at?: string | null;
+  deleted_at?: string | null;
+  created_at?: string | null;
+}): string {
+  const u = item.updated_at || item.created_at || "1970-01-01T00:00:00.000Z";
+  const d = item.deleted_at || "";
+  return d > u ? d : u;
+}
+
+/**
+ * Normalizes a task record so that if `updated_at > deleted_at`, `deleted_at` is cleared (`null`),
+ * and if `deleted_at >= updated_at`, `deleted_at` wins and the item remains soft-deleted.
+ */
+export function resolveSoftDeleteWinner<
+  T extends { updated_at: string; deleted_at: string | null }
+>(item: T): T {
+  if (item.deleted_at && item.updated_at > item.deleted_at) {
+    return { ...item, deleted_at: null };
+  }
+  return item;
+}
+
+/**
+ * Computes Monday YYYY-MM-DD for a given YYYY-MM-DD date string.
+ */
+export function getMondayWeekStart(dateStr: string): string {
+  try {
+    const d = parseISO(dateStr);
+    return format(startOfWeek(d, { weekStartsOn: 1 }), "yyyy-MM-dd");
+  } catch {
+    return dateStr;
+  }
+}
+
+/**
+ * Fetches all local tasks from SQLite (`local_tasks` table), including soft-deleted rows
+ * (`deleted_at IS NOT NULL`) so GitHub sync can propagate deletions across devices.
+ */
+export async function getAllLocalTasks(): Promise<LocalTask[]> {
+  const db = await getDatabase();
+  const rows = await db.select<RawLocalTaskRow[]>(
+    `SELECT * FROM local_tasks ORDER BY id ASC`
+  );
+  return rows.map(mapRowToLocalTask);
+}
+
+/**
+ * Fetches active (non-deleted) local tasks scheduled within a date range (YYYY-MM-DD)
+ * for the 7-day weekly view or monthly calendar widget.
+ * Hides items where `deleted_at` is set (`deleted_at IS NULL OR updated_at > deleted_at`).
+ */
+export async function getLocalTasksInRange(
+  startDate: string,
+  endDate: string,
+  onlyWeeklyVisible = false
+): Promise<LocalTask[]> {
+  const db = await getDatabase();
+  const visibilityClause = onlyWeeklyVisible ? "AND show_in_weekly = 1" : "";
+  const rows = await db.select<RawLocalTaskRow[]>(
+    `SELECT *
+     FROM local_tasks
+     WHERE assigned_date >= $1
+       AND assigned_date <= $2
+       AND (deleted_at IS NULL OR updated_at > deleted_at)
+       ${visibilityClause}
+     ORDER BY assigned_date ASC, is_completed ASC, sort_order ASC, start_time ASC, id ASC`,
+    [startDate, endDate]
+  );
+  return rows.map(mapRowToLocalTask);
+}
+
+/**
+ * Fetches active persistent "Long-Term Tasks" (`is_long_term = 1` and `show_in_sidebar = 1`).
+ * Hides items where `deleted_at` is set.
+ */
+export async function getLongTermSidebarTasks(): Promise<LocalTask[]> {
+  const db = await getDatabase();
+  const rows = await db.select<RawLocalTaskRow[]>(
+    `SELECT *
+     FROM local_tasks
+     WHERE show_in_sidebar = 1
+       AND is_long_term = 1
+       AND (deleted_at IS NULL OR updated_at > deleted_at)
+     ORDER BY is_completed ASC, sort_order ASC, created_at ASC, id ASC`
+  );
+  return rows.map(mapRowToLocalTask);
+}
+
+/**
+ * Fetches active "Weekly Tasks" for a specific week (`weekStartDate`..`weekEndDate`).
+ * Hides items where `deleted_at` is set.
+ */
+export async function getWeeklySidebarTasks(
+  weekStartDate: string,
+  weekEndDate: string
+): Promise<LocalTask[]> {
+  const db = await getDatabase();
+  const rows = await db.select<RawLocalTaskRow[]>(
+    `SELECT *
+     FROM local_tasks
+     WHERE show_in_sidebar = 1
+       AND is_long_term = 0
+       AND (deleted_at IS NULL OR updated_at > deleted_at)
+       AND (
+         assigned_week_start = $1
+         OR (assigned_date >= $1 AND assigned_date <= $2)
+       )
+     ORDER BY is_completed ASC, sort_order ASC, created_at ASC, id ASC`,
+    [weekStartDate, weekEndDate]
+  );
+  return rows.map(mapRowToLocalTask);
+}
+
+/**
+ * Creates a new local task in SQLite with an ISO 8601 `updated_at` timestamp and `deleted_at = NULL`.
+ */
+export async function createLocalTask(
+  input: CreateLocalTaskInput
+): Promise<number> {
+  const db = await getDatabase();
+  const nowIso = new Date().toISOString();
+
+  const maxOrderRows = await db.select<{ max_order: number | null }[]>(
+    `SELECT MAX(sort_order) as max_order FROM local_tasks`
+  );
+  const nextOrder = (maxOrderRows[0]?.max_order ?? 0) + 10;
+
+  const assignedDate = input.assigned_date ?? null;
+  const assignedWeekStart =
+    input.assigned_week_start !== undefined
+      ? input.assigned_week_start
+      : assignedDate
+      ? getMondayWeekStart(assignedDate)
+      : null;
+
+  const result = await db.execute(
+    `INSERT INTO local_tasks (
+      title, notes, assigned_date, assigned_week_start, is_long_term,
+      start_time, end_time, is_completed, show_in_weekly, show_in_sidebar,
+      sort_order, created_at, updated_at, deleted_at
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9, $10, $11, $12, NULL)`,
+    [
+      input.title.trim(),
+      input.notes ?? null,
+      assignedDate,
+      assignedWeekStart,
+      input.is_long_term ? 1 : 0,
+      input.start_time ?? null,
+      input.end_time ?? null,
+      input.show_in_weekly ? 1 : 0,
+      input.show_in_sidebar ? 1 : 0,
+      nextOrder,
+      nowIso,
+      nowIso,
+    ]
+  );
+
+  await notifyDatabaseUpdated("local_tasks:create");
+  return result.lastInsertId ?? 0;
+}
+
+/**
+ * Updates an existing local task, bumps `updated_at` to the current ISO 8601 timestamp,
+ * and clears `deleted_at` (`NULL`) since `updated_at` is now newer.
+ */
+export async function updateLocalTask(
+  id: number,
+  updates: UpdateLocalTaskInput
+): Promise<void> {
+  const db = await getDatabase();
+  const existingRows = await db.select<RawLocalTaskRow[]>(
+    `SELECT * FROM local_tasks WHERE id = $1`,
+    [id]
+  );
+  const current = existingRows[0];
+  if (!current) return;
+
+  const nowIso = new Date().toISOString();
+  const nextTitle = updates.title !== undefined ? updates.title.trim() : current.title;
+  const nextNotes = updates.notes !== undefined ? updates.notes : current.notes;
+  const nextAssignedDate =
+    updates.assigned_date !== undefined ? updates.assigned_date : current.assigned_date;
+  const nextAssignedWeekStart =
+    updates.assigned_week_start !== undefined
+      ? updates.assigned_week_start
+      : updates.assigned_date !== undefined && updates.assigned_date !== null
+      ? getMondayWeekStart(updates.assigned_date)
+      : current.assigned_week_start;
+  const nextIsLongTerm =
+    updates.is_long_term !== undefined
+      ? updates.is_long_term
+        ? 1
+        : 0
+      : current.is_long_term;
+  const nextStartTime =
+    updates.start_time !== undefined ? updates.start_time : current.start_time;
+  const nextEndTime =
+    updates.end_time !== undefined ? updates.end_time : current.end_time;
+  const nextCompleted =
+    updates.is_completed !== undefined
+      ? updates.is_completed
+        ? 1
+        : 0
+      : current.is_completed;
+  const nextShowWeekly =
+    updates.show_in_weekly !== undefined
+      ? updates.show_in_weekly
+        ? 1
+        : 0
+      : current.show_in_weekly;
+  const nextShowSidebar =
+    updates.show_in_sidebar !== undefined
+      ? updates.show_in_sidebar
+        ? 1
+        : 0
+      : current.show_in_sidebar;
+  const nextSortOrder =
+    updates.sort_order !== undefined ? updates.sort_order : current.sort_order;
+
+  await db.execute(
+    `UPDATE local_tasks
+     SET title = $1,
+         notes = $2,
+         assigned_date = $3,
+         assigned_week_start = $4,
+         is_long_term = $5,
+         start_time = $6,
+         end_time = $7,
+         is_completed = $8,
+         show_in_weekly = $9,
+         show_in_sidebar = $10,
+         sort_order = $11,
+         updated_at = $12,
+         deleted_at = NULL
+     WHERE id = $13`,
+    [
+      nextTitle,
+      nextNotes,
+      nextAssignedDate,
+      nextAssignedWeekStart,
+      nextIsLongTerm,
+      nextStartTime,
+      nextEndTime,
+      nextCompleted,
+      nextShowWeekly,
+      nextShowSidebar,
+      nextSortOrder,
+      nowIso,
+      id,
+    ]
+  );
+
+  await notifyDatabaseUpdated("local_tasks:update");
+}
+
+/**
+ * Toggles the completion checkbox for a local task.
+ */
+export async function toggleLocalTaskCompletion(
+  id: number,
+  isCompleted: boolean
+): Promise<void> {
+  await updateLocalTask(id, { is_completed: isCompleted });
+}
+
+/**
+ * Moves a local task exclusively to a specific day column (`assignedDate = YYYY-MM-DD`).
+ */
+export async function moveLocalTaskToDate(
+  id: number,
+  assignedDate: string,
+  keepInSidebar = false
+): Promise<void> {
+  const updates: UpdateLocalTaskInput = {
+    assigned_date: assignedDate,
+    assigned_week_start: getMondayWeekStart(assignedDate),
+    is_long_term: false,
+    show_in_weekly: true,
+    show_in_sidebar: keepInSidebar,
+  };
+  await updateLocalTask(id, updates);
+}
+
+/**
+ * Moves a local task to the "Weekly Tasks" sidebar or "Long-Term Tasks" sidebar.
+ */
+export async function moveLocalTaskToSidebar(
+  id: number,
+  options: {
+    weekStartDate: string | null;
+    isLongTerm: boolean;
+    keepInDayColumn?: boolean;
+  }
+): Promise<void> {
+  const updates: UpdateLocalTaskInput = {
+    assigned_week_start: options.isLongTerm ? null : options.weekStartDate,
+    is_long_term: options.isLongTerm,
+    show_in_sidebar: true,
+  };
+  if (!options.keepInDayColumn) {
+    updates.show_in_weekly = false;
+    updates.assigned_date = null;
+  }
+  await updateLocalTask(id, updates);
+}
+
+/**
+ * Migrates a weekly task to the previous or next week (`targetWeekStartDate` Monday).
+ */
+export async function migrateWeeklyTaskToWeek(
+  id: number,
+  targetWeekStartDate: string
+): Promise<void> {
+  await updateLocalTask(id, {
+    assigned_week_start: targetWeekStartDate,
+    assigned_date: null,
+    is_long_term: false,
+    show_in_weekly: false,
+    show_in_sidebar: true,
+  });
+}
+
+/**
+ * "Clear completed" action in the Tasks sidebar header:
+ * Soft-deletes completed tasks from the Tasks sidebar FOR THAT WEEK ONLY.
+ */
+export async function clearCompletedSidebarTasksForWeek(
+  weekStartDate: string,
+  weekEndDate: string
+): Promise<void> {
+  const db = await getDatabase();
+  const nowIso = new Date().toISOString();
+
+  await db.execute(
+    `UPDATE local_tasks
+     SET show_in_sidebar = 0,
+         updated_at = $3
+     WHERE is_completed = 1
+       AND show_in_sidebar = 1
+       AND show_in_weekly = 1
+       AND is_long_term = 0
+       AND (deleted_at IS NULL OR updated_at > deleted_at)
+       AND (
+         assigned_week_start = $1
+         OR (assigned_date >= $1 AND assigned_date <= $2)
+       )`,
+    [weekStartDate, weekEndDate, nowIso]
+  );
+
+  await db.execute(
+    `UPDATE local_tasks
+     SET deleted_at = $3,
+         updated_at = $3
+     WHERE is_completed = 1
+       AND show_in_sidebar = 1
+       AND show_in_weekly = 0
+       AND is_long_term = 0
+       AND (deleted_at IS NULL OR updated_at > deleted_at)
+       AND (
+         assigned_week_start = $1
+         OR (assigned_date >= $1 AND assigned_date <= $2)
+       )`,
+    [weekStartDate, weekEndDate, nowIso]
+  );
+
+  await notifyDatabaseUpdated("local_tasks:clear_completed_week_sidebar");
+}
+
+/**
+ * "Clear completed" action in the Long-Term Tasks section header (soft-delete).
+ */
+export async function clearCompletedLongTermSidebarTasks(): Promise<void> {
+  const db = await getDatabase();
+  const nowIso = new Date().toISOString();
+
+  await db.execute(
+    `UPDATE local_tasks
+     SET show_in_sidebar = 0,
+         updated_at = $1
+     WHERE is_completed = 1
+       AND show_in_sidebar = 1
+       AND show_in_weekly = 1
+       AND is_long_term = 1
+       AND (deleted_at IS NULL OR updated_at > deleted_at)`,
+    [nowIso]
+  );
+
+  await db.execute(
+    `UPDATE local_tasks
+     SET deleted_at = $1,
+         updated_at = $1
+     WHERE is_completed = 1
+       AND show_in_sidebar = 1
+       AND show_in_weekly = 0
+       AND is_long_term = 1
+       AND (deleted_at IS NULL OR updated_at > deleted_at)`,
+    [nowIso]
+  );
+
+  await notifyDatabaseUpdated("local_tasks:clear_completed_long_term_sidebar");
+}
+
+/**
+ * Soft-deletes a local task by setting `deleted_at` (and `updated_at`) to the current ISO 8601 timestamp.
+ */
+export async function deleteLocalTask(id: number): Promise<void> {
+  const db = await getDatabase();
+  const nowIso = new Date().toISOString();
+  await db.execute(
+    `UPDATE local_tasks
+     SET deleted_at = $1,
+         updated_at = $1
+     WHERE id = $2`,
+    [nowIso, id]
+  );
+  await notifyDatabaseUpdated("local_tasks:delete");
+}
+
+/**
+ * Automatically hard-deletes soft-deleted rows (`deleted_at IS NOT NULL`) in `local_tasks`
+ * and `week_images` where `deleted_at` is older than 30 days.
+ * Runs on app startup.
+ */
+export async function purgeExpiredSoftDeletedRecords(daysOld = 30): Promise<number> {
+  const db = await getDatabase();
+  const cutoffIso = subDays(new Date(), daysOld).toISOString();
+
+  const resTasks = await db.execute(
+    `DELETE FROM local_tasks
+     WHERE deleted_at IS NOT NULL
+       AND deleted_at < $1
+       AND (updated_at IS NULL OR updated_at <= deleted_at)`,
+    [cutoffIso]
+  );
+
+  const resImages = await db.execute(
+    `DELETE FROM week_images
+     WHERE deleted_at IS NOT NULL
+       AND deleted_at < $1
+       AND (updated_at IS NULL OR updated_at <= deleted_at)`,
+    [cutoffIso]
+  );
+
+  const totalPurged = (resTasks.rowsAffected ?? 0) + (resImages.rowsAffected ?? 0);
+  if (totalPurged > 0) {
+    await notifyDatabaseUpdated("local_tasks:purge_expired");
+  }
+  return totalPurged;
+}
+
+/**
+ * Immediately hard-deletes ALL soft-deleted rows (`deleted_at IS NOT NULL`) from `local_tasks`
+ * and `week_images` in SQLite (triggered by the "Clean Deleted Tasks" button in Settings).
+ */
+export async function purgeAllSoftDeletedRecordsNow(): Promise<{
+  purgedTasks: number;
+  purgedImages: number;
+}> {
+  const db = await getDatabase();
+
+  const resTasks = await db.execute(
+    `DELETE FROM local_tasks
+     WHERE deleted_at IS NOT NULL
+       AND (updated_at IS NULL OR updated_at <= deleted_at)`
+  );
+
+  const resImages = await db.execute(
+    `DELETE FROM week_images
+     WHERE deleted_at IS NOT NULL
+       AND (updated_at IS NULL OR updated_at <= deleted_at)`
+  );
+
+  const purgedTasks = resTasks.rowsAffected ?? 0;
+  const purgedImages = resImages.rowsAffected ?? 0;
+
+  await notifyDatabaseUpdated("local_tasks:purge_all_deleted");
+  return { purgedTasks, purgedImages };
+}
+
+/**
+ * Upserts remote GitHub `tasks` and `week_images` into local SQLite by `id`:
+ * Compares the effective newest timestamp (`max(updated_at, deleted_at)`) of the remote item
+ * against the local item. Whichever timestamp (`updated_at` vs. `deleted_at`) is newest wins!
+ */
+export async function upsertRemoteBackupIntoLocal(
+  remoteTasks: LocalTask[],
+  remoteImages: WeekImage[]
+): Promise<number> {
+  const db = await getDatabase();
+  const localTasks = await getAllLocalTasks();
+  const localTaskMap = new Map<number, LocalTask>();
+  for (const lt of localTasks) {
+    localTaskMap.set(lt.id, lt);
+  }
+
+  let upsertedCount = 0;
+
+  for (const rawRt of remoteTasks) {
+    const rt = resolveSoftDeleteWinner({
+      ...rawRt,
+      updated_at: rawRt.updated_at || rawRt.created_at || "1970-01-01T00:00:00.000Z",
+      deleted_at: rawRt.deleted_at ?? null,
+    });
+
+    const existing = localTaskMap.get(rt.id);
+    const remoteEffective = getEffectiveTimestamp(rt);
+    const localEffective = existing ? getEffectiveTimestamp(existing) : "";
+
+    if (!existing) {
+      await db.execute(
+        `INSERT INTO local_tasks (
+          id, title, notes, assigned_date, assigned_week_start, is_long_term,
+          start_time, end_time, is_completed, show_in_weekly, show_in_sidebar,
+          sort_order, created_at, updated_at, deleted_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+        [
+          rt.id,
+          rt.title,
+          rt.notes,
+          rt.assigned_date,
+          rt.assigned_week_start,
+          rt.is_long_term ? 1 : 0,
+          rt.start_time,
+          rt.end_time,
+          rt.is_completed ? 1 : 0,
+          rt.show_in_weekly ? 1 : 0,
+          rt.show_in_sidebar ? 1 : 0,
+          rt.sort_order,
+          rt.created_at || rt.updated_at,
+          rt.updated_at,
+          rt.deleted_at,
+        ]
+      );
+      upsertedCount++;
+    } else if (remoteEffective > localEffective) {
+      // Combine remote and local timestamps and let the newest of (updated_at vs deleted_at) win
+      const newestUpdated =
+        rt.updated_at > existing.updated_at ? rt.updated_at : existing.updated_at;
+      const candDeleted =
+        (rt.deleted_at || "") > (existing.deleted_at || "")
+          ? rt.deleted_at
+          : existing.deleted_at;
+      const winningDeleted =
+        candDeleted && candDeleted >= newestUpdated ? candDeleted : null;
+
+      await db.execute(
+        `UPDATE local_tasks
+         SET title = $1,
+             notes = $2,
+             assigned_date = $3,
+             assigned_week_start = $4,
+             is_long_term = $5,
+             start_time = $6,
+             end_time = $7,
+             is_completed = $8,
+             show_in_weekly = $9,
+             show_in_sidebar = $10,
+             sort_order = $11,
+             created_at = $12,
+             updated_at = $13,
+             deleted_at = $14
+         WHERE id = $15`,
+        [
+          rt.title,
+          rt.notes,
+          rt.assigned_date,
+          rt.assigned_week_start,
+          rt.is_long_term ? 1 : 0,
+          rt.start_time,
+          rt.end_time,
+          rt.is_completed ? 1 : 0,
+          rt.show_in_weekly ? 1 : 0,
+          rt.show_in_sidebar ? 1 : 0,
+          rt.sort_order,
+          rt.created_at || existing.created_at,
+          newestUpdated,
+          winningDeleted,
+          rt.id,
+        ]
+      );
+      upsertedCount++;
+    }
+  }
+
+  const localImages = await getAllWeekImages();
+  const localImgMap = new Map<string, WeekImage>();
+  for (const li of localImages) {
+    localImgMap.set(li.id, li);
+  }
+
+  for (const rawImg of remoteImages) {
+    const img = resolveSoftDeleteWinner({
+      ...rawImg,
+      updated_at: rawImg.updated_at || "1970-01-01T00:00:00.000Z",
+      deleted_at: rawImg.deleted_at ?? null,
+    });
+
+    const existingImg = localImgMap.get(img.id);
+    const remoteEffective = getEffectiveTimestamp(img);
+    const localEffective = existingImg ? getEffectiveTimestamp(existingImg) : "";
+
+    if (!existingImg) {
+      await db.execute(
+        `INSERT INTO week_images (
+          id, week_start, image_url, pos_x, pos_y, width, height, z_index, is_locked,
+          rotation, crop_top, crop_right, crop_bottom, crop_left, opacity, updated_at, deleted_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+        [
+          img.id,
+          img.week_start,
+          img.image_url,
+          img.pos_x,
+          img.pos_y,
+          img.width,
+          img.height ?? null,
+          img.z_index ?? 10,
+          img.is_locked ? 1 : 0,
+          img.rotation ?? 0,
+          img.crop_top ?? 0,
+          img.crop_right ?? 0,
+          img.crop_bottom ?? 0,
+          img.crop_left ?? 0,
+          img.opacity ?? 10,
+          img.updated_at,
+          img.deleted_at,
+        ]
+      );
+      upsertedCount++;
+    } else if (remoteEffective > localEffective) {
+      const newestUpdated =
+        img.updated_at > existingImg.updated_at
+          ? img.updated_at
+          : existingImg.updated_at;
+      const candDeleted =
+        (img.deleted_at || "") > (existingImg.deleted_at || "")
+          ? img.deleted_at
+          : existingImg.deleted_at;
+      const winningDeleted =
+        candDeleted && candDeleted >= newestUpdated ? candDeleted : null;
+
+      await db.execute(
+        `UPDATE week_images
+         SET week_start = $1,
+             image_url = $2,
+             pos_x = $3,
+             pos_y = $4,
+             width = $5,
+             height = $6,
+             z_index = $7,
+             is_locked = $8,
+             rotation = $9,
+             crop_top = $10,
+             crop_right = $11,
+             crop_bottom = $12,
+             crop_left = $13,
+             opacity = $14,
+             updated_at = $15,
+             deleted_at = $16
+         WHERE id = $17`,
+        [
+          img.week_start,
+          img.image_url,
+          img.pos_x,
+          img.pos_y,
+          img.width,
+          img.height ?? null,
+          img.z_index ?? 10,
+          img.is_locked ? 1 : 0,
+          img.rotation ?? 0,
+          img.crop_top ?? 0,
+          img.crop_right ?? 0,
+          img.crop_bottom ?? 0,
+          img.crop_left ?? 0,
+          img.opacity ?? 10,
+          newestUpdated,
+          winningDeleted,
+          img.id,
+        ]
+      );
+      upsertedCount++;
+    }
+  }
+
+  if (upsertedCount > 0) {
+    await notifyDatabaseUpdated("github_sync:pull_upsert");
+  }
+  return upsertedCount;
+}
+
+/**
+ * Replaces the entire local `local_tasks` and `week_images` tables with the given dataset.
+ */
+export async function replaceAllLocalDataWithRemote(
+  remoteTasks: LocalTask[],
+  remoteImages: WeekImage[]
+): Promise<void> {
+  const db = await getDatabase();
+  await db.execute(`DELETE FROM local_tasks`);
+  await db.execute(`DELETE FROM week_images WHERE COALESCE(is_local_only, 0) = 0`);
+
+  for (const rawRt of remoteTasks) {
+    const rt = resolveSoftDeleteWinner({
+      ...rawRt,
+      updated_at: rawRt.updated_at || rawRt.created_at || new Date().toISOString(),
+      deleted_at: rawRt.deleted_at ?? null,
+    });
+    await db.execute(
+      `INSERT INTO local_tasks (
+        id, title, notes, assigned_date, assigned_week_start, is_long_term,
+        start_time, end_time, is_completed, show_in_weekly, show_in_sidebar,
+        sort_order, created_at, updated_at, deleted_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+      [
+        rt.id,
+        rt.title,
+        rt.notes,
+        rt.assigned_date,
+        rt.assigned_week_start,
+        rt.is_long_term ? 1 : 0,
+        rt.start_time,
+        rt.end_time,
+        rt.is_completed ? 1 : 0,
+        rt.show_in_weekly ? 1 : 0,
+        rt.show_in_sidebar ? 1 : 0,
+        rt.sort_order,
+        rt.created_at || rt.updated_at,
+        rt.updated_at,
+        rt.deleted_at,
+      ]
+    );
+  }
+
+  for (const rawImg of remoteImages) {
+    const img = resolveSoftDeleteWinner({
+      ...rawImg,
+      updated_at: rawImg.updated_at || new Date().toISOString(),
+      deleted_at: rawImg.deleted_at ?? null,
+    });
+    await db.execute(
+      `INSERT INTO week_images (
+        id, week_start, image_url, pos_x, pos_y, width, height, z_index, is_locked,
+        rotation, crop_top, crop_right, crop_bottom, crop_left, opacity, updated_at, deleted_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+      [
+        img.id,
+        img.week_start,
+        img.image_url,
+        img.pos_x,
+        img.pos_y,
+        img.width,
+        img.height ?? null,
+        img.z_index ?? 10,
+        img.is_locked ? 1 : 0,
+        img.rotation ?? 0,
+        img.crop_top ?? 0,
+        img.crop_right ?? 0,
+        img.crop_bottom ?? 0,
+        img.crop_left ?? 0,
+        img.opacity ?? 10,
+        img.updated_at,
+        img.deleted_at,
+      ]
+    );
+  }
+
+  await notifyDatabaseUpdated("github_sync:replace_all");
+}
