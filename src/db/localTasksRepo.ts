@@ -1,15 +1,21 @@
 import { format, parseISO, startOfWeek, subDays } from "date-fns";
 import { getDatabase, notifyDatabaseUpdated } from "./database";
 import { getAllWeekImages } from "./weekImagesRepo";
+import { getAllLocalEventsForBackup } from "./localEventsRepo";
+import { getAllNotePagesForBackup } from "./notePagesRepo";
+import { generateUuid } from "../utils/id";
 import {
   CreateLocalTaskInput,
+  LocalEvent,
   LocalTask,
+  NotePage,
   UpdateLocalTaskInput,
   WeekImage,
 } from "../types/planner";
 
 interface RawLocalTaskRow {
   id: number;
+  sync_id?: string | null;
   title: string;
   notes: string | null;
   assigned_date: string | null;
@@ -29,6 +35,7 @@ interface RawLocalTaskRow {
 function mapRowToLocalTask(row: RawLocalTaskRow): LocalTask {
   return {
     ...row,
+    sync_id: row.sync_id || String(row.id),
     is_long_term: Boolean(row.is_long_term),
     is_completed: Boolean(row.is_completed),
     show_in_weekly: Boolean(row.show_in_weekly),
@@ -177,13 +184,15 @@ export async function createLocalTask(
       ? getMondayWeekStart(assignedDate)
       : null;
 
+  const syncId = generateUuid();
   const result = await db.execute(
     `INSERT INTO local_tasks (
-      title, notes, assigned_date, assigned_week_start, is_long_term,
+      sync_id, title, notes, assigned_date, assigned_week_start, is_long_term,
       start_time, end_time, is_completed, show_in_weekly, show_in_sidebar,
       sort_order, created_at, updated_at, deleted_at
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9, $10, $11, $12, NULL)`,
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, $9, $10, $11, $12, $13, NULL)`,
     [
+      syncId,
       input.title.trim(),
       input.notes ?? null,
       assignedDate,
@@ -485,7 +494,27 @@ export async function purgeExpiredSoftDeletedRecords(daysOld = 30): Promise<numb
     [cutoffIso]
   );
 
-  const totalPurged = (resTasks.rowsAffected ?? 0) + (resImages.rowsAffected ?? 0);
+  const resEvents = await db.execute(
+    `DELETE FROM local_events
+     WHERE deleted_at IS NOT NULL
+       AND deleted_at < $1
+       AND (updated_at IS NULL OR updated_at <= deleted_at)`,
+    [cutoffIso]
+  );
+
+  const resNotes = await db.execute(
+    `DELETE FROM note_pages
+     WHERE deleted_at IS NOT NULL
+       AND deleted_at < $1
+       AND (updated_at IS NULL OR updated_at <= deleted_at)`,
+    [cutoffIso]
+  );
+
+  const totalPurged =
+    (resTasks.rowsAffected ?? 0) +
+    (resImages.rowsAffected ?? 0) +
+    (resEvents.rowsAffected ?? 0) +
+    (resNotes.rowsAffected ?? 0);
   if (totalPurged > 0) {
     await notifyDatabaseUpdated("local_tasks:purge_expired");
   }
@@ -514,6 +543,18 @@ export async function purgeAllSoftDeletedRecordsNow(): Promise<{
        AND (updated_at IS NULL OR updated_at <= deleted_at)`
   );
 
+  await db.execute(
+    `DELETE FROM local_events
+     WHERE deleted_at IS NOT NULL
+       AND (updated_at IS NULL OR updated_at <= deleted_at)`
+  );
+
+  await db.execute(
+    `DELETE FROM note_pages
+     WHERE deleted_at IS NOT NULL
+       AND (updated_at IS NULL OR updated_at <= deleted_at)`
+  );
+
   const purgedTasks = resTasks.rowsAffected ?? 0;
   const purgedImages = resImages.rowsAffected ?? 0;
 
@@ -528,13 +569,19 @@ export async function purgeAllSoftDeletedRecordsNow(): Promise<{
  */
 export async function upsertRemoteBackupIntoLocal(
   remoteTasks: LocalTask[],
-  remoteImages: WeekImage[]
+  remoteImages: WeekImage[],
+  remoteLocalEvents: LocalEvent[] = [],
+  remoteNotePages: NotePage[] = []
 ): Promise<number> {
   const db = await getDatabase();
   const localTasks = await getAllLocalTasks();
-  const localTaskMap = new Map<number, LocalTask>();
+  const localBySyncId = new Map<string, LocalTask>();
+  const localById = new Map<number, LocalTask>();
   for (const lt of localTasks) {
-    localTaskMap.set(lt.id, lt);
+    if (lt.sync_id && lt.sync_id.trim() !== "") {
+      localBySyncId.set(lt.sync_id.trim(), lt);
+    }
+    localById.set(lt.id, lt);
   }
 
   let upsertedCount = 0;
@@ -546,19 +593,21 @@ export async function upsertRemoteBackupIntoLocal(
       deleted_at: rawRt.deleted_at ?? null,
     });
 
-    const existing = localTaskMap.get(rt.id);
+    const remoteSyncId = rt.sync_id && rt.sync_id.trim() !== "" ? rt.sync_id.trim() : null;
+    const existing = remoteSyncId ? localBySyncId.get(remoteSyncId) : localById.get(rt.id);
     const remoteEffective = getEffectiveTimestamp(rt);
     const localEffective = existing ? getEffectiveTimestamp(existing) : "";
 
     if (!existing) {
+      const resolvedSyncId = remoteSyncId || generateUuid();
       await db.execute(
         `INSERT INTO local_tasks (
-          id, title, notes, assigned_date, assigned_week_start, is_long_term,
+          sync_id, title, notes, assigned_date, assigned_week_start, is_long_term,
           start_time, end_time, is_completed, show_in_weekly, show_in_sidebar,
           sort_order, created_at, updated_at, deleted_at
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
         [
-          rt.id,
+          resolvedSyncId,
           rt.title,
           rt.notes,
           rt.assigned_date,
@@ -586,25 +635,28 @@ export async function upsertRemoteBackupIntoLocal(
           : existing.deleted_at;
       const winningDeleted =
         candDeleted && candDeleted >= newestUpdated ? candDeleted : null;
+      const resolvedSyncId = remoteSyncId || existing.sync_id || generateUuid();
 
       await db.execute(
         `UPDATE local_tasks
-         SET title = $1,
-             notes = $2,
-             assigned_date = $3,
-             assigned_week_start = $4,
-             is_long_term = $5,
-             start_time = $6,
-             end_time = $7,
-             is_completed = $8,
-             show_in_weekly = $9,
-             show_in_sidebar = $10,
-             sort_order = $11,
-             created_at = $12,
-             updated_at = $13,
-             deleted_at = $14
-         WHERE id = $15`,
+         SET sync_id = $1,
+             title = $2,
+             notes = $3,
+             assigned_date = $4,
+             assigned_week_start = $5,
+             is_long_term = $6,
+             start_time = $7,
+             end_time = $8,
+             is_completed = $9,
+             show_in_weekly = $10,
+             show_in_sidebar = $11,
+             sort_order = $12,
+             created_at = $13,
+             updated_at = $14,
+             deleted_at = $15
+         WHERE id = $16`,
         [
+          resolvedSyncId,
           rt.title,
           rt.notes,
           rt.assigned_date,
@@ -619,7 +671,7 @@ export async function upsertRemoteBackupIntoLocal(
           rt.created_at || existing.created_at,
           newestUpdated,
           winningDeleted,
-          rt.id,
+          existing.id,
         ]
       );
       upsertedCount++;
@@ -725,6 +777,152 @@ export async function upsertRemoteBackupIntoLocal(
     }
   }
 
+  const localEvents = await getAllLocalEventsForBackup();
+  const localEventMap = new Map<string, LocalEvent>();
+  for (const ev of localEvents) {
+    localEventMap.set(ev.id, ev);
+  }
+
+  for (const rawEv of remoteLocalEvents) {
+    if (!rawEv.id) continue;
+    const ev = resolveSoftDeleteWinner({
+      ...rawEv,
+      created_at: rawEv.created_at || rawEv.updated_at || "1970-01-01T00:00:00.000Z",
+      updated_at: rawEv.updated_at || rawEv.created_at || "1970-01-01T00:00:00.000Z",
+      deleted_at: rawEv.deleted_at ?? null,
+    });
+    const existingEv = localEventMap.get(ev.id);
+    const remoteEff = getEffectiveTimestamp(ev);
+    const localEff = existingEv ? getEffectiveTimestamp(existingEv) : "";
+
+    if (!existingEv) {
+      await db.execute(
+        `INSERT INTO local_events (
+          id, title, location, event_date, start_time, end_time,
+          is_all_day, is_repeating, repeat_type, repeat_interval, repeat_unit,
+          repeat_end_date, excluded_dates, hidden_dates, created_at, updated_at, deleted_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+        [
+          ev.id,
+          ev.title,
+          ev.location ?? null,
+          ev.event_date,
+          ev.start_time ?? null,
+          ev.end_time ?? null,
+          ev.is_all_day ? 1 : 0,
+          ev.is_repeating ? 1 : 0,
+          ev.repeat_type ?? null,
+          Math.max(1, ev.repeat_interval || 1),
+          ev.repeat_unit ?? null,
+          ev.repeat_end_date ?? null,
+          JSON.stringify(Array.isArray(ev.excluded_dates) ? ev.excluded_dates : []),
+          JSON.stringify(Array.isArray(ev.hidden_dates) ? ev.hidden_dates : []),
+          ev.created_at,
+          ev.updated_at,
+          ev.deleted_at ?? null,
+        ]
+      );
+      upsertedCount++;
+    } else if (remoteEff > localEff) {
+      const newestUpdated =
+        ev.updated_at > existingEv.updated_at ? ev.updated_at : existingEv.updated_at;
+      const candDeleted =
+        (ev.deleted_at || "") > (existingEv.deleted_at || "")
+          ? ev.deleted_at
+          : existingEv.deleted_at;
+      const winningDeleted =
+        candDeleted && candDeleted >= newestUpdated ? candDeleted : null;
+
+      await db.execute(
+        `UPDATE local_events
+         SET title = $1,
+             location = $2,
+             event_date = $3,
+             start_time = $4,
+             end_time = $5,
+             is_all_day = $6,
+             is_repeating = $7,
+             repeat_type = $8,
+             repeat_interval = $9,
+             repeat_unit = $10,
+             repeat_end_date = $11,
+             excluded_dates = $12,
+             hidden_dates = $13,
+             created_at = $14,
+             updated_at = $15,
+             deleted_at = $16
+         WHERE id = $17`,
+        [
+          ev.title,
+          ev.location ?? null,
+          ev.event_date,
+          ev.start_time ?? null,
+          ev.end_time ?? null,
+          ev.is_all_day ? 1 : 0,
+          ev.is_repeating ? 1 : 0,
+          ev.repeat_type ?? null,
+          Math.max(1, ev.repeat_interval || 1),
+          ev.repeat_unit ?? null,
+          ev.repeat_end_date ?? null,
+          JSON.stringify(Array.isArray(ev.excluded_dates) ? ev.excluded_dates : []),
+          JSON.stringify(Array.isArray(ev.hidden_dates) ? ev.hidden_dates : []),
+          ev.created_at || existingEv.created_at,
+          newestUpdated,
+          winningDeleted,
+          ev.id,
+        ]
+      );
+      upsertedCount++;
+    }
+  }
+
+  const localNotePages = await getAllNotePagesForBackup();
+  const localNoteMap = new Map<string, NotePage>();
+  for (const np of localNotePages) {
+    localNoteMap.set(np.id, np);
+  }
+
+  for (const rawNp of remoteNotePages) {
+    if (!rawNp.id) continue;
+    const np = resolveSoftDeleteWinner({
+      ...rawNp,
+      updated_at: rawNp.updated_at || "1970-01-01T00:00:00.000Z",
+      deleted_at: rawNp.deleted_at ?? null,
+    });
+    const existingNp = localNoteMap.get(np.id);
+    const remoteEff = getEffectiveTimestamp(np);
+    const localEff = existingNp ? getEffectiveTimestamp(existingNp) : "";
+
+    if (!existingNp) {
+      await db.execute(
+        `INSERT INTO note_pages (id, page_order, content, updated_at, deleted_at)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [np.id, np.page_order, np.content ?? "", np.updated_at, np.deleted_at ?? null]
+      );
+      upsertedCount++;
+    } else if (remoteEff > localEff) {
+      const newestUpdated =
+        np.updated_at > existingNp.updated_at ? np.updated_at : existingNp.updated_at;
+      const candDeleted =
+        (np.deleted_at || "") > (existingNp.deleted_at || "")
+          ? np.deleted_at
+          : existingNp.deleted_at;
+      const winningDeleted =
+        candDeleted && candDeleted >= newestUpdated ? candDeleted : null;
+
+      await db.execute(
+        `UPDATE note_pages
+         SET page_order = $1,
+             content = $2,
+             updated_at = $3,
+             deleted_at = $4
+         WHERE id = $5`,
+        [np.page_order, np.content ?? "", newestUpdated, winningDeleted, np.id]
+      );
+      upsertedCount++;
+    }
+  }
+
   if (upsertedCount > 0) {
     await notifyDatabaseUpdated("github_sync:pull_upsert");
   }
@@ -736,11 +934,15 @@ export async function upsertRemoteBackupIntoLocal(
  */
 export async function replaceAllLocalDataWithRemote(
   remoteTasks: LocalTask[],
-  remoteImages: WeekImage[]
+  remoteImages: WeekImage[],
+  remoteLocalEvents: LocalEvent[] = [],
+  remoteNotePages: NotePage[] = []
 ): Promise<void> {
   const db = await getDatabase();
   await db.execute(`DELETE FROM local_tasks`);
   await db.execute(`DELETE FROM week_images WHERE COALESCE(is_local_only, 0) = 0`);
+  await db.execute(`DELETE FROM local_events`);
+  await db.execute(`DELETE FROM note_pages`);
 
   for (const rawRt of remoteTasks) {
     const rt = resolveSoftDeleteWinner({
@@ -748,14 +950,15 @@ export async function replaceAllLocalDataWithRemote(
       updated_at: rawRt.updated_at || rawRt.created_at || new Date().toISOString(),
       deleted_at: rawRt.deleted_at ?? null,
     });
+    const resolvedSyncId = rt.sync_id && rt.sync_id.trim() !== "" ? rt.sync_id.trim() : generateUuid();
     await db.execute(
       `INSERT INTO local_tasks (
-        id, title, notes, assigned_date, assigned_week_start, is_long_term,
+        sync_id, title, notes, assigned_date, assigned_week_start, is_long_term,
         start_time, end_time, is_completed, show_in_weekly, show_in_sidebar,
         sort_order, created_at, updated_at, deleted_at
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
       [
-        rt.id,
+        resolvedSyncId,
         rt.title,
         rt.notes,
         rt.assigned_date,
@@ -804,6 +1007,56 @@ export async function replaceAllLocalDataWithRemote(
         img.updated_at,
         img.deleted_at,
       ]
+    );
+  }
+
+  for (const rawEv of remoteLocalEvents) {
+    if (!rawEv.id) continue;
+    const ev = resolveSoftDeleteWinner({
+      ...rawEv,
+      created_at: rawEv.created_at || rawEv.updated_at || new Date().toISOString(),
+      updated_at: rawEv.updated_at || rawEv.created_at || new Date().toISOString(),
+      deleted_at: rawEv.deleted_at ?? null,
+    });
+    await db.execute(
+      `INSERT INTO local_events (
+        id, title, location, event_date, start_time, end_time,
+        is_all_day, is_repeating, repeat_type, repeat_interval, repeat_unit,
+        repeat_end_date, excluded_dates, hidden_dates, created_at, updated_at, deleted_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+      [
+        ev.id,
+        ev.title,
+        ev.location ?? null,
+        ev.event_date,
+        ev.start_time ?? null,
+        ev.end_time ?? null,
+        ev.is_all_day ? 1 : 0,
+        ev.is_repeating ? 1 : 0,
+        ev.repeat_type ?? null,
+        Math.max(1, ev.repeat_interval || 1),
+        ev.repeat_unit ?? null,
+        ev.repeat_end_date ?? null,
+        JSON.stringify(Array.isArray(ev.excluded_dates) ? ev.excluded_dates : []),
+        JSON.stringify(Array.isArray(ev.hidden_dates) ? ev.hidden_dates : []),
+        ev.created_at,
+        ev.updated_at,
+        ev.deleted_at ?? null,
+      ]
+    );
+  }
+
+  for (const rawNp of remoteNotePages) {
+    if (!rawNp.id) continue;
+    const np = resolveSoftDeleteWinner({
+      ...rawNp,
+      updated_at: rawNp.updated_at || new Date().toISOString(),
+      deleted_at: rawNp.deleted_at ?? null,
+    });
+    await db.execute(
+      `INSERT INTO note_pages (id, page_order, content, updated_at, deleted_at)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [np.id, np.page_order, np.content ?? "", np.updated_at, np.deleted_at ?? null]
     );
   }
 

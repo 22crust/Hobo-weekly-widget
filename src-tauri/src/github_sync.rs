@@ -1,5 +1,5 @@
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
+use reqwest::header::{ACCEPT, AUTHORIZATION, ETAG, IF_NONE_MATCH, USER_AGENT};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -50,6 +50,15 @@ impl GithubConfig {
             "planner-data.json".to_string()
         } else {
             p.to_string()
+        }
+    }
+
+    pub fn calendar_cache_path(&self) -> String {
+        let p = self.normalized_path();
+        if let Some((dir, _)) = p.rsplit_once('/') {
+            format!("{}/calendar-cache.json", dir)
+        } else {
+            "calendar-cache.json".to_string()
         }
     }
 }
@@ -137,10 +146,12 @@ where
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SyncedLocalTask {
     #[serde(default)]
     pub id: i64,
+    #[serde(default)]
+    pub sync_id: Option<String>,
     #[serde(default)]
     pub title: String,
     #[serde(default)]
@@ -172,6 +183,16 @@ pub struct SyncedLocalTask {
 }
 
 impl SyncedLocalTask {
+    /// Stable cross-device merge key: prefers `sync_id` UUID, falling back to `legacy:<id>`.
+    pub fn sync_key(&self) -> String {
+        self.sync_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("legacy:{}", self.id))
+    }
+
     /// Returns whichever timestamp (`updated_at` vs. `deleted_at`) is newest,
     /// and clears `deleted_at` if `updated_at > deleted_at`.
     pub fn normalized(mut self) -> Self {
@@ -191,7 +212,7 @@ impl SyncedLocalTask {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SyncedWeekImage {
     #[serde(default, deserialize_with = "deserialize_string_id_forgiving")]
     pub id: String,
@@ -247,6 +268,138 @@ impl SyncedWeekImage {
     }
 }
 
+fn default_repeat_interval() -> i64 {
+    1
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SyncedLocalEvent {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub location: Option<String>,
+    #[serde(default)]
+    pub event_date: String,
+    #[serde(default)]
+    pub start_time: Option<String>,
+    #[serde(default)]
+    pub end_time: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_bool_forgiving")]
+    pub is_all_day: bool,
+    #[serde(default, deserialize_with = "deserialize_bool_forgiving")]
+    pub is_repeating: bool,
+    #[serde(default)]
+    pub repeat_type: Option<String>,
+    #[serde(default = "default_repeat_interval")]
+    pub repeat_interval: i64,
+    #[serde(default)]
+    pub repeat_unit: Option<String>,
+    #[serde(default)]
+    pub repeat_end_date: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_forgiving_vec")]
+    pub excluded_dates: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_forgiving_vec")]
+    pub hidden_dates: Vec<String>,
+    #[serde(default = "default_epoch_iso")]
+    pub created_at: String,
+    #[serde(default = "default_epoch_iso")]
+    pub updated_at: String,
+    #[serde(default)]
+    pub deleted_at: Option<String>,
+}
+
+impl SyncedLocalEvent {
+    pub fn normalized(mut self) -> Self {
+        if let Some(ref del) = self.deleted_at {
+            if self.updated_at > *del {
+                self.deleted_at = None;
+            }
+        }
+        self
+    }
+
+    pub fn effective_timestamp(&self) -> &str {
+        match &self.deleted_at {
+            Some(del) if del.as_str() > self.updated_at.as_str() => del.as_str(),
+            _ => self.updated_at.as_str(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SyncedNotePage {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub page_order: i64,
+    #[serde(default)]
+    pub content: String,
+    #[serde(default = "default_epoch_iso")]
+    pub updated_at: String,
+    #[serde(default)]
+    pub deleted_at: Option<String>,
+}
+
+impl SyncedNotePage {
+    pub fn normalized(mut self) -> Self {
+        if let Some(ref del) = self.deleted_at {
+            if self.updated_at > *del {
+                self.deleted_at = None;
+            }
+        }
+        self
+    }
+
+    pub fn effective_timestamp(&self) -> &str {
+        match &self.deleted_at {
+            Some(del) if del.as_str() > self.updated_at.as_str() => del.as_str(),
+            _ => self.updated_at.as_str(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CalendarCacheEvent {
+    #[serde(default)]
+    pub instance_key: String,
+    #[serde(default)]
+    pub uid: String,
+    #[serde(default)]
+    pub source_url: String,
+    #[serde(default)]
+    pub calendar_name: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub location: Option<String>,
+    #[serde(default)]
+    pub start_time: String,
+    #[serde(default)]
+    pub end_time: String,
+    #[serde(default)]
+    pub event_date: String,
+    #[serde(default, deserialize_with = "deserialize_bool_forgiving")]
+    pub is_all_day: bool,
+    #[serde(default, deserialize_with = "deserialize_bool_forgiving")]
+    pub is_hidden: bool,
+    #[serde(default)]
+    pub last_synced: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CalendarCachePayload {
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
+    #[serde(default = "default_epoch_iso")]
+    pub exported_at: String,
+    #[serde(default, deserialize_with = "deserialize_forgiving_vec")]
+    pub events: Vec<CalendarCacheEvent>,
+}
+
 /**
  * Versioned JSON Envelope (`schema_version: 1`) for `planner-data.json`:
  * ```json
@@ -272,6 +425,20 @@ pub struct PlannerBackupPayload {
     pub tasks: Vec<SyncedLocalTask>,
     #[serde(default, deserialize_with = "deserialize_forgiving_vec")]
     pub week_images: Vec<SyncedWeekImage>,
+    #[serde(default, deserialize_with = "deserialize_forgiving_vec")]
+    pub local_events: Vec<SyncedLocalEvent>,
+    #[serde(default, deserialize_with = "deserialize_forgiving_vec")]
+    pub note_pages: Vec<SyncedNotePage>,
+}
+
+impl PlannerBackupPayload {
+    /// Compares all synced collections ignoring `exported_at` so no-op pushes can be skipped.
+    pub fn data_equals(&self, other: &Self) -> bool {
+        self.tasks == other.tasks
+            && self.week_images == other.week_images
+            && self.local_events == other.local_events
+            && self.note_pages == other.note_pages
+    }
 }
 
 impl Default for PlannerBackupPayload {
@@ -281,6 +448,8 @@ impl Default for PlannerBackupPayload {
             exported_at: String::new(),
             tasks: Vec::new(),
             week_images: Vec::new(),
+            local_events: Vec::new(),
+            note_pages: Vec::new(),
         }
     }
 }
@@ -293,22 +462,23 @@ pub fn merge_backup_payloads(
     remote: Option<&PlannerBackupPayload>,
     exclude_soft_deleted: bool,
 ) -> PlannerBackupPayload {
-    let mut task_map: BTreeMap<i64, SyncedLocalTask> = BTreeMap::new();
+    let mut task_map: BTreeMap<String, SyncedLocalTask> = BTreeMap::new();
     for t in &local.tasks {
         let norm = t.clone().normalized();
-        task_map.insert(norm.id, norm);
+        task_map.insert(norm.sync_key(), norm);
     }
 
     if let Some(rem) = remote {
         for rt in &rem.tasks {
             let norm_rt = rt.clone().normalized();
-            match task_map.get(&norm_rt.id) {
+            let key = norm_rt.sync_key();
+            match task_map.get(&key) {
                 None => {
-                    task_map.insert(norm_rt.id, norm_rt);
+                    task_map.insert(key, norm_rt);
                 }
                 Some(existing) => {
                     if norm_rt.effective_timestamp() > existing.effective_timestamp() {
-                        task_map.insert(norm_rt.id, norm_rt);
+                        task_map.insert(key, norm_rt);
                     }
                 }
             }
@@ -342,12 +512,70 @@ pub fn merge_backup_payloads(
         }
     }
 
+    let mut event_map: BTreeMap<String, SyncedLocalEvent> = BTreeMap::new();
+    for ev in &local.local_events {
+        let norm = ev.clone().normalized();
+        if !norm.id.is_empty() {
+            event_map.insert(norm.id.clone(), norm);
+        }
+    }
+
+    if let Some(rem) = remote {
+        for rev in &rem.local_events {
+            let norm_rev = rev.clone().normalized();
+            if norm_rev.id.is_empty() {
+                continue;
+            }
+            match event_map.get(&norm_rev.id) {
+                None => {
+                    event_map.insert(norm_rev.id.clone(), norm_rev);
+                }
+                Some(existing) => {
+                    if norm_rev.effective_timestamp() > existing.effective_timestamp() {
+                        event_map.insert(norm_rev.id.clone(), norm_rev);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut note_map: BTreeMap<String, SyncedNotePage> = BTreeMap::new();
+    for np in &local.note_pages {
+        let norm = np.clone().normalized();
+        if !norm.id.is_empty() {
+            note_map.insert(norm.id.clone(), norm);
+        }
+    }
+
+    if let Some(rem) = remote {
+        for rnp in &rem.note_pages {
+            let norm_rnp = rnp.clone().normalized();
+            if norm_rnp.id.is_empty() {
+                continue;
+            }
+            match note_map.get(&norm_rnp.id) {
+                None => {
+                    note_map.insert(norm_rnp.id.clone(), norm_rnp);
+                }
+                Some(existing) => {
+                    if norm_rnp.effective_timestamp() > existing.effective_timestamp() {
+                        note_map.insert(norm_rnp.id.clone(), norm_rnp);
+                    }
+                }
+            }
+        }
+    }
+
     let mut merged_tasks: Vec<SyncedLocalTask> = task_map.into_values().collect();
     let mut merged_images: Vec<SyncedWeekImage> = image_map.into_values().collect();
+    let mut merged_events: Vec<SyncedLocalEvent> = event_map.into_values().collect();
+    let mut merged_notes: Vec<SyncedNotePage> = note_map.into_values().collect();
 
     if exclude_soft_deleted {
         merged_tasks.retain(|t| t.deleted_at.is_none());
         merged_images.retain(|img| img.deleted_at.is_none());
+        merged_events.retain(|ev| ev.deleted_at.is_none());
+        merged_notes.retain(|np| np.deleted_at.is_none());
     }
 
     PlannerBackupPayload {
@@ -355,6 +583,8 @@ pub fn merge_backup_payloads(
         exported_at: local.exported_at.clone(),
         tasks: merged_tasks,
         week_images: merged_images,
+        local_events: merged_events,
+        note_pages: merged_notes,
     }
 }
 
@@ -380,6 +610,8 @@ pub fn parse_backup_payload_forgiving(raw_json: &str) -> PlannerBackupPayload {
             exported_at: default_epoch_iso(),
             tasks,
             week_images: Vec::new(),
+            local_events: Vec::new(),
+            note_pages: Vec::new(),
         };
     }
 
@@ -419,6 +651,7 @@ pub struct GithubSyncState {
     pub latest_payload: Mutex<PlannerBackupPayload>,
     pub debounce_counter: AtomicU64,
     pub last_synced_at: Mutex<Option<String>>,
+    pub last_etag: Mutex<Option<String>>,
 }
 
 impl Default for GithubSyncState {
@@ -434,6 +667,7 @@ impl Default for GithubSyncState {
             latest_payload: Mutex::new(PlannerBackupPayload::default()),
             debounce_counter: AtomicU64::new(0),
             last_synced_at: Mutex::new(None),
+            last_etag: Mutex::new(None),
         }
     }
 }
@@ -462,13 +696,17 @@ fn build_http_client() -> Result<reqwest::Client, String> {
         .map_err(|e| format!("Failed to initialize HTTP client: {}", e))
 }
 
-fn contents_url(cfg: &GithubConfig) -> String {
+fn contents_url_for_path(cfg: &GithubConfig, path: &str) -> String {
     format!(
         "https://api.github.com/repos/{}/{}/contents/{}",
         cfg.github_owner.trim(),
         cfg.github_repo.trim(),
-        cfg.normalized_path()
+        path.trim_start_matches('/')
     )
+}
+
+fn contents_url(cfg: &GithubConfig) -> String {
+    contents_url_for_path(cfg, &cfg.normalized_path())
 }
 
 fn repo_url(cfg: &GithubConfig) -> String {
@@ -509,24 +747,53 @@ pub async fn validate_github_repo_access(cfg: &GithubConfig) -> Result<String, S
     }
 }
 
-pub async fn fetch_remote_file(
+pub enum RemoteFetchOutcome {
+    NotModified,
+    Fetched {
+        result: GithubRemoteCheckResult,
+        etag: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GithubPullResult {
+    pub not_modified: bool,
+    pub exists: bool,
+    pub payload: Option<PlannerBackupPayload>,
+}
+
+pub async fn fetch_remote_file_with_etag(
     cfg: &GithubConfig,
-) -> Result<GithubRemoteCheckResult, String> {
+    etag: Option<&str>,
+) -> Result<RemoteFetchOutcome, String> {
     let client = build_http_client()?;
-    let resp = client
+    let mut req = client
         .get(contents_url(cfg))
         .header(USER_AGENT, "LocalPlanner-Desktop-App")
         .header(ACCEPT, "application/vnd.github+json")
         .header(
             AUTHORIZATION,
             format!("Bearer {}", cfg.github_token.trim()),
-        )
+        );
+
+    if let Some(tag) = etag.map(str::trim).filter(|s| !s.is_empty()) {
+        req = req.header(IF_NONE_MATCH, tag);
+    }
+
+    let resp = req
         .send()
         .await
         .map_err(|e| format!("Failed to fetch remote file from GitHub: {}", e))?;
 
     match resp.status().as_u16() {
+        304 => Ok(RemoteFetchOutcome::NotModified),
         200 => {
+            let new_etag = resp
+                .headers()
+                .get(ETAG)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+
             let body: GithubContentsResponse = resp
                 .json()
                 .await
@@ -548,16 +815,22 @@ pub async fn fetch_remote_file(
                 Some(PlannerBackupPayload::default())
             };
 
-            Ok(GithubRemoteCheckResult {
-                exists: true,
-                sha: Some(body.sha),
-                payload: parsed_payload,
+            Ok(RemoteFetchOutcome::Fetched {
+                result: GithubRemoteCheckResult {
+                    exists: true,
+                    sha: Some(body.sha),
+                    payload: parsed_payload,
+                },
+                etag: new_etag,
             })
         }
-        404 => Ok(GithubRemoteCheckResult {
-            exists: false,
-            sha: None,
-            payload: None,
+        404 => Ok(RemoteFetchOutcome::Fetched {
+            result: GithubRemoteCheckResult {
+                exists: false,
+                sha: None,
+                payload: None,
+            },
+            etag: None,
         }),
         401 => Err("Invalid GitHub token (401 Unauthorized).".to_string()),
         403 => Err("GitHub token lacks permission (403 Forbidden).".to_string()),
@@ -565,20 +838,35 @@ pub async fn fetch_remote_file(
     }
 }
 
-async fn put_file_once(
+pub async fn fetch_remote_file(
+    cfg: &GithubConfig,
+) -> Result<GithubRemoteCheckResult, String> {
+    match fetch_remote_file_with_etag(cfg, None).await? {
+        RemoteFetchOutcome::Fetched { result, .. } => Ok(result),
+        RemoteFetchOutcome::NotModified => Ok(GithubRemoteCheckResult {
+            exists: true,
+            sha: None,
+            payload: None,
+        }),
+    }
+}
+
+async fn put_file_once_at_path(
     client: &reqwest::Client,
     cfg: &GithubConfig,
+    path: &str,
+    message: &'static str,
     encoded_content: &str,
     sha: Option<String>,
 ) -> Result<u16, String> {
     let req_body = GithubPutContentsRequest {
-        message: "Sync local planner data",
+        message,
         content: encoded_content.to_string(),
         sha,
     };
 
     let resp = client
-        .put(contents_url(cfg))
+        .put(contents_url_for_path(cfg, path))
         .header(USER_AGENT, "LocalPlanner-Desktop-App")
         .header(ACCEPT, "application/vnd.github+json")
         .header(
@@ -591,6 +879,117 @@ async fn put_file_once(
         .map_err(|e| format!("Network error pushing to GitHub: {}", e))?;
 
     Ok(resp.status().as_u16())
+}
+
+async fn put_file_once(
+    client: &reqwest::Client,
+    cfg: &GithubConfig,
+    encoded_content: &str,
+    sha: Option<String>,
+) -> Result<u16, String> {
+    put_file_once_at_path(
+        client,
+        cfg,
+        &cfg.normalized_path(),
+        "Sync local planner data",
+        encoded_content,
+        sha,
+    )
+    .await
+}
+
+async fn fetch_remote_sha_for_path(
+    client: &reqwest::Client,
+    cfg: &GithubConfig,
+    path: &str,
+) -> Result<Option<String>, String> {
+    let resp = client
+        .get(contents_url_for_path(cfg, path))
+        .header(USER_AGENT, "LocalPlanner-Desktop-App")
+        .header(ACCEPT, "application/vnd.github+json")
+        .header(
+            AUTHORIZATION,
+            format!("Bearer {}", cfg.github_token.trim()),
+        )
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch remote SHA from GitHub: {}", e))?;
+
+    match resp.status().as_u16() {
+        200 => {
+            let body: GithubContentsResponse = resp
+                .json()
+                .await
+                .map_err(|e| format!("Invalid GitHub contents metadata: {}", e))?;
+            Ok(Some(body.sha))
+        }
+        404 => Ok(None),
+        401 => Err("Invalid GitHub token (401 Unauthorized).".to_string()),
+        403 => Err("GitHub token lacks permission (403 Forbidden).".to_string()),
+        code => Err(format!("GitHub GET contents failed with HTTP {}", code)),
+    }
+}
+
+#[tauri::command]
+pub async fn push_calendar_cache_to_github(
+    state: tauri::State<'_, Arc<GithubSyncState>>,
+    payload: CalendarCachePayload,
+) -> Result<(), String> {
+    let cfg = state
+        .config
+        .lock()
+        .map_err(|_| "Failed to lock config".to_string())?
+        .clone();
+
+    if !cfg.is_active() {
+        return Ok(());
+    }
+
+    let client = build_http_client()?;
+    let cache_path = cfg.calendar_cache_path();
+    let formatted_json = serde_json::to_string_pretty(&payload)
+        .map_err(|e| format!("Failed to serialize calendar cache payload: {}", e))?;
+    let encoded = BASE64_STANDARD.encode(formatted_json.as_bytes());
+
+    let sha = fetch_remote_sha_for_path(&client, &cfg, &cache_path).await?;
+    let status = put_file_once_at_path(
+        &client,
+        &cfg,
+        &cache_path,
+        "Update calendar-cache.json",
+        &encoded,
+        sha,
+    )
+    .await?;
+
+    if status == 200 || status == 201 {
+        return Ok(());
+    }
+
+    if status == 409 || status == 422 {
+        let retry_sha = fetch_remote_sha_for_path(&client, &cfg, &cache_path).await?;
+        let retry_status = put_file_once_at_path(
+            &client,
+            &cfg,
+            &cache_path,
+            "Update calendar-cache.json",
+            &encoded,
+            retry_sha,
+        )
+        .await?;
+        if retry_status == 200 || retry_status == 201 {
+            return Ok(());
+        }
+        return Err(format!(
+            "GitHub calendar-cache conflict retry failed with HTTP {}",
+            retry_status
+        ));
+    }
+
+    Err(format!(
+        "GitHub calendar-cache PUT failed with HTTP {}",
+        status
+    ))
 }
 
 /// Pulls the latest `planner-data.json` from GitHub, merges by `id` + newest (`updated_at` vs. `deleted_at`)
@@ -615,6 +1014,15 @@ pub async fn pull_merge_and_push_to_github(
     } else {
         merge_backup_payloads(local_payload, remote.payload.as_ref(), false)
     };
+
+    // Skip no-op PUT when remote already matches the merged data
+    if !overwrite_remote {
+        if let Some(ref rem_payload) = remote.payload {
+            if combined_payload.data_equals(rem_payload) {
+                return Ok(combined_payload);
+            }
+        }
+    }
 
     let formatted_json = serde_json::to_string_pretty(&combined_payload)
         .map_err(|e| format!("Failed to serialize backup payload: {}", e))?;
@@ -656,8 +1064,21 @@ pub async fn configure_github_sync(
     config: GithubConfig,
 ) -> Result<(), String> {
     let is_active = config.is_active();
-    if let Ok(mut guard) = state.config.lock() {
+    let target_changed = if let Ok(mut guard) = state.config.lock() {
+        let changed = guard.github_owner.trim() != config.github_owner.trim()
+            || guard.github_repo.trim() != config.github_repo.trim()
+            || guard.normalized_path() != config.normalized_path()
+            || guard.storage_mode != config.storage_mode;
         *guard = config;
+        changed
+    } else {
+        true
+    };
+
+    if target_changed {
+        if let Ok(mut etag_guard) = state.last_etag.lock() {
+            *etag_guard = None;
+        }
     }
 
     if is_active {
@@ -685,7 +1106,7 @@ pub async fn check_github_remote_file(
 pub async fn pull_from_github(
     app: AppHandle,
     state: tauri::State<'_, Arc<GithubSyncState>>,
-) -> Result<Option<PlannerBackupPayload>, String> {
+) -> Result<GithubPullResult, String> {
     let cfg = state
         .config
         .lock()
@@ -694,22 +1115,44 @@ pub async fn pull_from_github(
 
     if !cfg.is_active() {
         emit_sync_status(&app, &state, "disabled", None);
-        return Ok(None);
+        return Ok(GithubPullResult {
+            not_modified: false,
+            exists: false,
+            payload: None,
+        });
     }
 
+    let cached_etag = state.last_etag.lock().ok().and_then(|g| g.clone());
+
     emit_sync_status(&app, &state, "syncing", None);
-    match fetch_remote_file(&cfg).await {
-        Ok(res) => {
+    match fetch_remote_file_with_etag(&cfg, cached_etag.as_deref()).await {
+        Ok(RemoteFetchOutcome::NotModified) => {
+            emit_sync_status(&app, &state, "synced", None);
+            Ok(GithubPullResult {
+                not_modified: true,
+                exists: true,
+                payload: None,
+            })
+        }
+        Ok(RemoteFetchOutcome::Fetched { result, etag }) => {
+            if let Ok(mut etag_guard) = state.last_etag.lock() {
+                *etag_guard = etag;
+            }
             if let Ok(mut ts) = state.last_synced_at.lock() {
                 *ts = Some(
-                    res.payload
+                    result
+                        .payload
                         .as_ref()
                         .map(|p| p.exported_at.clone())
                         .unwrap_or_default(),
                 );
             }
             emit_sync_status(&app, &state, "synced", None);
-            Ok(res.payload)
+            Ok(GithubPullResult {
+                not_modified: false,
+                exists: result.exists,
+                payload: result.payload,
+            })
         }
         Err(err) => {
             emit_sync_status(&app, &state, "error", Some(err.clone()));
@@ -743,6 +1186,9 @@ pub async fn sync_to_github_now(
     emit_sync_status(&app, &state, "syncing", None);
     match pull_merge_and_push_to_github(&cfg, &payload, overwrite_remote.unwrap_or(false)).await {
         Ok(merged) => {
+            if let Ok(mut etag_guard) = state.last_etag.lock() {
+                *etag_guard = None;
+            }
             let now_iso = merged.exported_at.clone();
             if let Ok(mut ts) = state.last_synced_at.lock() {
                 *ts = Some(now_iso);
@@ -808,6 +1254,9 @@ pub async fn queue_debounced_github_push(
         // Pull latest from GitHub, merge by id + (updated_at vs deleted_at), and push combined result
         match pull_merge_and_push_to_github(&current_cfg, &latest_data, false).await {
             Ok(merged) => {
+                if let Ok(mut etag_guard) = state_clone.last_etag.lock() {
+                    *etag_guard = None;
+                }
                 if let Ok(mut ts) = state_clone.last_synced_at.lock() {
                     *ts = Some(merged.exported_at.clone());
                 }

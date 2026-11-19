@@ -7,6 +7,28 @@ interface RawNotePageRow {
   page_order: number;
   content: string;
   updated_at: string;
+  deleted_at?: string | null;
+}
+
+function mapRowToNotePage(row: RawNotePageRow): NotePage {
+  return {
+    id: row.id,
+    page_order: row.page_order,
+    content: row.content,
+    updated_at: row.updated_at,
+    deleted_at: row.deleted_at ?? null,
+  };
+}
+
+/**
+ * Fetches all `note_pages` rows (including soft-deleted tombstones) for GitHub backup sync.
+ */
+export async function getAllNotePagesForBackup(): Promise<NotePage[]> {
+  const db = await getDatabase();
+  const rows = await db.select<RawNotePageRow[]>(
+    `SELECT * FROM note_pages ORDER BY page_order ASC`
+  );
+  return rows.map(mapRowToNotePage);
 }
 
 let seedInFlightPromise: Promise<NotePage[]> | null = null;
@@ -18,11 +40,13 @@ let seedInFlightPromise: Promise<NotePage[]> | null = null;
 export async function getAllNotePages(): Promise<NotePage[]> {
   const db = await getDatabase();
   const rows = await db.select<RawNotePageRow[]>(
-    `SELECT * FROM note_pages ORDER BY page_order ASC`
+    `SELECT * FROM note_pages
+     WHERE (deleted_at IS NULL OR updated_at > deleted_at)
+     ORDER BY page_order ASC`
   );
 
   if (rows.length > 0) {
-    return rows;
+    return rows.map(mapRowToNotePage);
   }
 
   if (seedInFlightPromise) {
@@ -31,10 +55,12 @@ export async function getAllNotePages(): Promise<NotePage[]> {
 
   seedInFlightPromise = (async () => {
     const recheck = await db.select<RawNotePageRow[]>(
-      `SELECT * FROM note_pages ORDER BY page_order ASC`
+      `SELECT * FROM note_pages
+       WHERE (deleted_at IS NULL OR updated_at > deleted_at)
+       ORDER BY page_order ASC`
     );
     if (recheck.length > 0) {
-      return recheck;
+      return recheck.map(mapRowToNotePage);
     }
 
     // Seed 3 blank pages by default
@@ -74,7 +100,7 @@ export async function updateNotePageContent(
   const db = await getDatabase();
   const now = new Date().toISOString();
   await db.execute(
-    `UPDATE note_pages SET content = $1, updated_at = $2 WHERE id = $3`,
+    `UPDATE note_pages SET content = $1, updated_at = $2, deleted_at = NULL WHERE id = $3`,
     [content, now, id]
   );
   await notifyDatabaseUpdated("note_pages:update");
@@ -127,25 +153,30 @@ export async function deleteNotePage(id: string): Promise<void> {
     return;
   }
 
-  await db.execute(`DELETE FROM note_pages WHERE id = $1`, [id]);
+  const now = new Date().toISOString();
+  await db.execute(
+    `UPDATE note_pages SET deleted_at = $1, updated_at = $1 WHERE id = $2`,
+    [now, id]
+  );
 
   // Soft-delete any stickers placed on this note page
-  const now = new Date().toISOString();
   await db.execute(
     `UPDATE week_images SET deleted_at = $1, updated_at = $1 WHERE week_start = $2`,
     [now, `note:${id}`]
   );
 
-  // Renumber remaining pages sequentially 1..N
+  // Renumber remaining active pages sequentially 1..N
   const remaining = await db.select<RawNotePageRow[]>(
-    `SELECT * FROM note_pages ORDER BY page_order ASC`
+    `SELECT * FROM note_pages
+     WHERE (deleted_at IS NULL OR updated_at > deleted_at)
+     ORDER BY page_order ASC`
   );
   for (let i = 0; i < remaining.length; i++) {
     const desiredOrder = i + 1;
     if (remaining[i].page_order !== desiredOrder) {
       await db.execute(
-        `UPDATE note_pages SET page_order = $1 WHERE id = $2`,
-        [desiredOrder, remaining[i].id]
+        `UPDATE note_pages SET page_order = $1, updated_at = $2 WHERE id = $3`,
+        [desiredOrder, now, remaining[i].id]
       );
     }
   }

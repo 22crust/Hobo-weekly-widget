@@ -55,6 +55,19 @@ export async function getGoogleEventsForDate(dateStr: string): Promise<GoogleEve
 }
 
 /**
+ * Fetches all cached `.ics` calendar events from `calendar_events` for exporting `calendar-cache.json`.
+ */
+export async function getAllCachedCalendarEvents(): Promise<GoogleEvent[]> {
+  const db = await getDatabase();
+  const rows = await db.select<RawCalendarEventRow[]>(
+    `SELECT *
+     FROM calendar_events
+     ORDER BY event_date ASC, is_all_day DESC, start_time ASC`
+  );
+  return rows.map(mapRowToCalendarEvent);
+}
+
+/**
  * Hides or unhides a specific Calendar event occurrence in the weekly view.
  * This preference persists across background .ics syncs.
  */

@@ -1,0 +1,59 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --hobo-grid-size: 16px;
+  --hobo-accent-rgb: 201 74 56;
+  --hobo-accent-hex: #C94A38;
+}
+
+html,
+body,
+#root {
+  background-color: #F7F4EB;
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+  font-family: "DINPro-Light", "DINPro", "DIN Pro", "FF DIN", "DIN Alternate",
+    "Bahnschrift", ui-sans-serif, system-ui, sans-serif;
+  font-weight: 300;
+  color: #383633;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.hobonichi-grid-bg {
+  background-color: #F7F4EB;
+  background-image:
+    linear-gradient(to right, rgba(185, 179, 166, 0.32) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(185, 179, 166, 0.32) 1px, transparent 1px);
+  background-size: var(--hobo-grid-size, 16px) var(--hobo-grid-size, 16px);
+  background-position: 0 0;
+}
+
+html,
+body,
+* {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+*::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.safe-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+[data-drop-active="true"] {
+  background-color: rgb(var(--hobo-accent-rgb, 201 74 56) / 0.14);
+  outline: 1px dashed rgb(var(--hobo-accent-rgb, 201 74 56) / 0.75);
+}

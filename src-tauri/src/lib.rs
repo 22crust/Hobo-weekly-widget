@@ -4,8 +4,8 @@ pub mod github_sync;
 use calendar_sync::fetch_calendar_ics_feed;
 use github_sync::{
     check_github_remote_file, configure_github_sync, pull_from_github,
-    pull_merge_and_push_to_github, queue_debounced_github_push, sync_to_github_now,
-    test_github_connection, GithubSyncState,
+    pull_merge_and_push_to_github, push_calendar_cache_to_github, queue_debounced_github_push,
+    sync_to_github_now, test_github_connection, GithubSyncState,
 };
 use std::sync::{Arc, Mutex};
 use tauri::{
@@ -248,6 +248,34 @@ fn get_migrations() -> Vec<Migration> {
             ",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 13,
+            description: "add_sync_id_to_local_tasks",
+            sql: "
+                ALTER TABLE local_tasks ADD COLUMN sync_id TEXT;
+                UPDATE local_tasks
+                SET sync_id = lower(
+                    hex(randomblob(4)) || '-' ||
+                    hex(randomblob(2)) || '-4' ||
+                    substr(hex(randomblob(2)), 2) || '-' ||
+                    substr('89ab', abs(random()) % 4 + 1, 1) ||
+                    substr(hex(randomblob(2)), 2) || '-' ||
+                    hex(randomblob(6))
+                )
+                WHERE sync_id IS NULL OR sync_id = '';
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_local_tasks_sync_id ON local_tasks(sync_id);
+            ",
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 14,
+            description: "add_deleted_at_to_local_events_and_note_pages",
+            sql: "
+                ALTER TABLE local_events ADD COLUMN deleted_at TEXT;
+                ALTER TABLE note_pages ADD COLUMN deleted_at TEXT;
+            ",
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -368,7 +396,8 @@ pub fn run() {
             check_github_remote_file,
             pull_from_github,
             sync_to_github_now,
-            queue_debounced_github_push
+            queue_debounced_github_push,
+            push_calendar_cache_to_github
         ])
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())

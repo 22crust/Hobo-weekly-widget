@@ -9,8 +9,12 @@ import {
   upsertRemoteBackupIntoLocal,
 } from "../db/localTasksRepo";
 import { getAllWeekImages } from "../db/weekImagesRepo";
+import { getAllLocalEventsForBackup } from "../db/localEventsRepo";
+import { getAllNotePagesForBackup } from "../db/notePagesRepo";
+import { getAllCachedCalendarEvents } from "../db/googleEventsRepo";
 import {
   AppSettings,
+  CalendarCachePayload,
   GithubRemoteCheckResult,
   GithubSyncStatusPayload,
   LocalTask,
@@ -19,6 +23,17 @@ import {
 
 export const GITHUB_SYNC_STATUS_EVENT = "github-sync-status";
 export const CURRENT_SCHEMA_VERSION = 1;
+const GITHUB_SYNC_INTERVAL_MS = 30 * 60 * 1000;
+const GITHUB_FOCUS_COOLDOWN_MS = 2 * 60 * 1000;
+
+interface GithubPullResult {
+  not_modified: boolean;
+  exists: boolean;
+  payload: PlannerBackupPayload | null;
+}
+
+let inFlightGithubPull: Promise<void> | null = null;
+let lastGithubCheckAt = 0;
 
 function toRustGithubConfig(settings: AppSettings) {
   return {
@@ -51,9 +66,11 @@ export function extractRemoteTasks(
  * Strictly excludes `google_events` and `app_settings`.
  */
 export async function buildLocalBackupPayload(): Promise<PlannerBackupPayload> {
-  const [tasks, images] = await Promise.all([
+  const [tasks, images, localEvents, notePages] = await Promise.all([
     getAllLocalTasks(),
     getAllWeekImages(),
+    getAllLocalEventsForBackup(),
+    getAllNotePagesForBackup(),
   ]);
 
   return {
@@ -61,6 +78,8 @@ export async function buildLocalBackupPayload(): Promise<PlannerBackupPayload> {
     exported_at: new Date().toISOString(),
     tasks,
     week_images: images,
+    local_events: localEvents,
+    note_pages: notePages,
   };
 }
 
@@ -120,9 +139,12 @@ export async function pushLocalDataToGithubNow(
   if (!overwriteRemote && merged) {
     await upsertRemoteBackupIntoLocal(
       extractRemoteTasks(merged),
-      merged.week_images ?? []
+      merged.week_images ?? [],
+      merged.local_events ?? [],
+      merged.note_pages ?? []
     );
   }
+  void pushCalendarCacheToGithub();
   const activeTasksCount = (merged?.tasks ?? payload.tasks).filter(
     (t) => !t.deleted_at || t.updated_at > t.deleted_at
   ).length;
@@ -155,41 +177,103 @@ export async function queueDebouncedGithubPush(): Promise<void> {
 export async function pullAndMergeFromGithub(
   runStartupPurge = false
 ): Promise<void> {
-  if (runStartupPurge) {
+  if (inFlightGithubPull) {
+    return inFlightGithubPull;
+  }
+
+  inFlightGithubPull = (async () => {
+    let purgedCount = 0;
+    if (runStartupPurge) {
+      try {
+        purgedCount = await purgeExpiredSoftDeletedRecords(30);
+      } catch (err) {
+        console.warn("[githubSyncService] purgeExpiredSoftDeletedRecords error:", err);
+      }
+    }
+
+    const settings = await getAppSettings();
+    await syncConfigToRustBackend(settings);
+    if (settings.storage_mode !== "github") return;
+
+    lastGithubCheckAt = Date.now();
+    let pullResult: GithubPullResult | null = null;
+
     try {
-      await purgeExpiredSoftDeletedRecords(30);
+      pullResult = await invoke<GithubPullResult>("pull_from_github");
+      if (pullResult?.payload) {
+        await upsertRemoteBackupIntoLocal(
+          extractRemoteTasks(pullResult.payload),
+          pullResult.payload.week_images ?? [],
+          pullResult.payload.local_events ?? [],
+          pullResult.payload.note_pages ?? []
+        );
+      }
     } catch (err) {
-      console.warn("[githubSyncService] purgeExpiredSoftDeletedRecords error:", err);
+      console.warn("[githubSyncService] pull_from_github warning:", err);
     }
-  }
 
-  const settings = await getAppSettings();
-  await syncConfigToRustBackend(settings);
-  if (settings.storage_mode !== "github") return;
-
-  try {
-    const remotePayload = await invoke<PlannerBackupPayload | null>(
-      "pull_from_github"
-    );
-    if (remotePayload) {
-      await upsertRemoteBackupIntoLocal(
-        extractRemoteTasks(remotePayload),
-        remotePayload.week_images ?? []
-      );
+    // If remote returned 304 Not Modified on a periodic/focus check and nothing was purged,
+    // skip the push round-trip (offline/local edits are already pushed by the 15s debounce).
+    if (pullResult?.not_modified && !runStartupPurge && purgedCount === 0) {
+      return;
     }
-  } catch (err) {
-    console.warn("[githubSyncService] pull_from_github warning:", err);
-  }
 
-  try {
-    const mergedPayload = await buildLocalBackupPayload();
-    await invoke("sync_to_github_now", {
-      payload: mergedPayload,
-      overwriteRemote: false,
-    });
-  } catch (err) {
-    console.warn("[githubSyncService] sync_to_github_now warning:", err);
-  }
+    try {
+      const mergedPayload = await buildLocalBackupPayload();
+      await invoke("sync_to_github_now", {
+        payload: mergedPayload,
+        overwriteRemote: false,
+      });
+    } catch (err) {
+      console.warn("[githubSyncService] sync_to_github_now warning:", err);
+    }
+  })().finally(() => {
+    inFlightGithubPull = null;
+  });
+
+  return inFlightGithubPull;
+}
+
+/**
+ * Starts the independent 30-minute GitHub sync loop (immediate on launch + every 30m)
+ * plus a window focus / visibility check with a 2-minute cooldown.
+ * Uses ETag / 304 Not Modified and skips no-op pushes so unchanged checks are lightweight.
+ */
+export function startBackgroundGithubSync(
+  onSyncComplete?: () => void
+): () => void {
+  let isDisposed = false;
+
+  const triggerPull = async (runStartupPurge: boolean) => {
+    if (isDisposed) return;
+    await pullAndMergeFromGithub(runStartupPurge);
+    if (!isDisposed) {
+      onSyncComplete?.();
+    }
+  };
+
+  void triggerPull(true);
+
+  const intervalId = window.setInterval(() => {
+    void triggerPull(false);
+  }, GITHUB_SYNC_INTERVAL_MS);
+
+  const handleFocusOrVisible = () => {
+    if (isDisposed) return;
+    if (document.visibilityState === "hidden") return;
+    if (Date.now() - lastGithubCheckAt < GITHUB_FOCUS_COOLDOWN_MS) return;
+    void triggerPull(false);
+  };
+
+  window.addEventListener("focus", handleFocusOrVisible);
+  document.addEventListener("visibilitychange", handleFocusOrVisible);
+
+  return () => {
+    isDisposed = true;
+    window.clearInterval(intervalId);
+    window.removeEventListener("focus", handleFocusOrVisible);
+    document.removeEventListener("visibilitychange", handleFocusOrVisible);
+  };
 }
 
 /**
@@ -224,17 +308,50 @@ export async function resolveInitialGithubMigration(
 
   const remoteTasks = extractRemoteTasks(remotePayload);
   const remoteImages = remotePayload.week_images ?? [];
+  const remoteLocalEvents = remotePayload.local_events ?? [];
+  const remoteNotePages = remotePayload.note_pages ?? [];
 
   if (mode === "keep_remote") {
-    await replaceAllLocalDataWithRemote(remoteTasks, remoteImages);
+    await replaceAllLocalDataWithRemote(
+      remoteTasks,
+      remoteImages,
+      remoteLocalEvents,
+      remoteNotePages
+    );
     const count = await pushLocalDataToGithubNow(true);
     return `Loaded ${count} task${count === 1 ? "" : "s"} from GitHub backup.`;
   }
 
   // "merge": Merge by `id` keeping newest (`updated_at` vs. `deleted_at`) and preserving unique items
-  await upsertRemoteBackupIntoLocal(remoteTasks, remoteImages);
+  await upsertRemoteBackupIntoLocal(
+    remoteTasks,
+    remoteImages,
+    remoteLocalEvents,
+    remoteNotePages
+  );
   const totalMerged = await pushLocalDataToGithubNow(false);
   return `Merged and backed up ${totalMerged} task${totalMerged === 1 ? "" : "s"} with GitHub.`;
+}
+
+/**
+ * Exports all cached `.ics` events from SQLite (`calendar_events`) to `calendar-cache.json`
+ * in the configured GitHub repository so a future mobile PWA can display them.
+ */
+export async function pushCalendarCacheToGithub(): Promise<void> {
+  try {
+    const settings = await getAppSettings();
+    if (settings.storage_mode !== "github") return;
+    await syncConfigToRustBackend(settings);
+    const events = await getAllCachedCalendarEvents();
+    const payload: CalendarCachePayload = {
+      schema_version: CURRENT_SCHEMA_VERSION,
+      exported_at: new Date().toISOString(),
+      events,
+    };
+    await invoke("push_calendar_cache_to_github", { payload });
+  } catch (err) {
+    console.warn("[githubSyncService] pushCalendarCacheToGithub error:", err);
+  }
 }
 
 /**

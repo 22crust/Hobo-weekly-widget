@@ -59,12 +59,6 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
             A new version of Local Planner is ready to download and install. Your tasks, events, notes, and stickers will be preserved.
           </p>
 
-          {update.body && update.body.trim().length > 0 && (
-            <div className="max-h-28 overflow-y-auto p-2 bg-white/60 border border-hobo-line text-[10px] text-hobo-muted whitespace-pre-wrap leading-snug">
-              {update.body.trim()}
-            </div>
-          )}
-
           {isInstalling && (
             <div className="space-y-1 pt-1">
               <div className="flex items-center justify-between text-[10px] text-hobo-muted">

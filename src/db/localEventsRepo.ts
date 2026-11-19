@@ -35,6 +35,7 @@ interface RawLocalEventRow {
   hidden_dates: string;
   created_at: string;
   updated_at: string;
+  deleted_at?: string | null;
 }
 
 function parseJsonStringArray(raw: string | null | undefined): string[] {
@@ -76,7 +77,19 @@ function mapRowToLocalEvent(row: RawLocalEventRow): LocalEvent {
     hidden_dates: parseJsonStringArray(row.hidden_dates),
     created_at: row.created_at,
     updated_at: row.updated_at,
+    deleted_at: row.deleted_at ?? null,
   };
+}
+
+/**
+ * Fetches all `local_events` rows (including soft-deleted tombstones) for GitHub backup sync.
+ */
+export async function getAllLocalEventsForBackup(): Promise<LocalEvent[]> {
+  const db = await getDatabase();
+  const rows = await db.select<RawLocalEventRow[]>(
+    `SELECT * FROM local_events ORDER BY event_date ASC, created_at ASC`
+  );
+  return rows.map(mapRowToLocalEvent);
 }
 
 function buildIsoForDateAndTime(dateStr: string, hhmm: string | null): string {
@@ -166,7 +179,8 @@ export async function getExpandedLocalEventsInRange(
   const rows = await db.select<RawLocalEventRow[]>(
     `SELECT *
      FROM local_events
-     WHERE event_date <= $1
+     WHERE (deleted_at IS NULL OR updated_at > deleted_at)
+       AND event_date <= $1
        AND (is_repeating = 1 OR event_date >= $2)
        AND (repeat_end_date IS NULL OR repeat_end_date >= $2)`,
     [rangeEnd, rangeStart]
@@ -308,7 +322,8 @@ export async function updateLocalEventSingle(
          repeat_type = $7,
          repeat_interval = $8,
          repeat_unit = $9,
-         updated_at = $10
+         updated_at = $10,
+         deleted_at = NULL
      WHERE id = $11`,
     [
       updates.title !== undefined ? updates.title.trim() : current.title,
@@ -362,7 +377,7 @@ export async function saveLocalEventThisOnly(
     new Set([...series.excluded_dates, occurrenceDate])
   );
   await db.execute(
-    `UPDATE local_events SET excluded_dates = $1, updated_at = $2 WHERE id = $3`,
+    `UPDATE local_events SET excluded_dates = $1, updated_at = $2, deleted_at = NULL WHERE id = $3`,
     [JSON.stringify(nextExcluded), now, seriesId]
   );
 
@@ -426,7 +441,8 @@ export async function saveLocalEventAllFuture(
     `UPDATE local_events
      SET repeat_end_date = $1,
          excluded_dates = $2,
-         updated_at = $3
+         updated_at = $3,
+         deleted_at = NULL
      WHERE id = $4`,
     [prevDayStr, JSON.stringify(remainingExcluded), now, seriesId]
   );
@@ -478,7 +494,11 @@ export async function saveLocalEventAllFuture(
 
 export async function deleteLocalEventAll(id: string): Promise<void> {
   const db = await getDatabase();
-  await db.execute(`DELETE FROM local_events WHERE id = $1`, [id]);
+  const nowIso = new Date().toISOString();
+  await db.execute(
+    `UPDATE local_events SET deleted_at = $1, updated_at = $1 WHERE id = $2`,
+    [nowIso, id]
+  );
   await notifyDatabaseUpdated("local_events:delete");
 }
 
@@ -502,7 +522,7 @@ export async function deleteLocalEventThisOnly(
     new Set([...series.excluded_dates, occurrenceDate])
   );
   await db.execute(
-    `UPDATE local_events SET excluded_dates = $1, updated_at = $2 WHERE id = $3`,
+    `UPDATE local_events SET excluded_dates = $1, updated_at = $2, deleted_at = NULL WHERE id = $3`,
     [JSON.stringify(nextExcluded), new Date().toISOString(), seriesId]
   );
   await notifyDatabaseUpdated("local_events:delete_this_only");
@@ -527,7 +547,7 @@ export async function deleteLocalEventAllFuture(
 
   const prevDayStr = format(subDays(parseISO(occurrenceDate), 1), "yyyy-MM-dd");
   await db.execute(
-    `UPDATE local_events SET repeat_end_date = $1, updated_at = $2 WHERE id = $3`,
+    `UPDATE local_events SET repeat_end_date = $1, updated_at = $2, deleted_at = NULL WHERE id = $3`,
     [prevDayStr, new Date().toISOString(), seriesId]
   );
   await notifyDatabaseUpdated("local_events:delete_all_future");
@@ -551,7 +571,7 @@ export async function setLocalEventOccurrenceHidden(
     : ev.hidden_dates.filter((d) => d !== occurrenceDate);
 
   await db.execute(
-    `UPDATE local_events SET hidden_dates = $1, updated_at = $2 WHERE id = $3`,
+    `UPDATE local_events SET hidden_dates = $1, updated_at = $2, deleted_at = NULL WHERE id = $3`,
     [JSON.stringify(nextHidden), new Date().toISOString(), id]
   );
   await notifyDatabaseUpdated("local_events:toggle_hidden");
@@ -563,7 +583,7 @@ export async function unhideAllLocalEventsInRange(
 ): Promise<void> {
   const db = await getDatabase();
   const rows = await db.select<RawLocalEventRow[]>(
-    `SELECT * FROM local_events WHERE hidden_dates != '[]'`
+    `SELECT * FROM local_events WHERE hidden_dates != '[]' AND (deleted_at IS NULL OR updated_at > deleted_at)`
   );
 
   for (const row of rows) {
@@ -573,8 +593,8 @@ export async function unhideAllLocalEventsInRange(
     );
     if (filtered.length !== ev.hidden_dates.length) {
       await db.execute(
-        `UPDATE local_events SET hidden_dates = $1 WHERE id = $2`,
-        [JSON.stringify(filtered), ev.id]
+        `UPDATE local_events SET hidden_dates = $1, updated_at = $2, deleted_at = NULL WHERE id = $3`,
+        [JSON.stringify(filtered), new Date().toISOString(), ev.id]
       );
     }
   }

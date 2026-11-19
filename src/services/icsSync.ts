@@ -4,6 +4,7 @@ import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { addDays, format, subDays } from "date-fns";
 import { getAppSettings } from "../db/appSettingsRepo";
 import { upsertGoogleEventsBatch } from "../db/googleEventsRepo";
+import { pushCalendarCacheToGithub } from "./githubSyncService";
 import {
   CalendarFeedSyncResult,
   SyncStatus,
@@ -443,6 +444,7 @@ async function runCalendarSyncInternal(
       [],
       []
     );
+    void pushCalendarCacheToGithub();
     broadcastFeedResults({});
     return {
       isSyncing: false,
@@ -515,6 +517,7 @@ async function runCalendarSyncInternal(
     activeSourceUrls
   );
 
+  void pushCalendarCacheToGithub();
   broadcastFeedResults(feedResults);
 
   return {

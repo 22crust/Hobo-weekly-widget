@@ -62,6 +62,7 @@ export interface LocalEvent {
   hidden_dates: string[];
   created_at: string;
   updated_at: string;
+  deleted_at?: string | null;
 }
 
 export interface CreateLocalEventInput {
@@ -116,6 +117,7 @@ export interface UpsertGoogleEventInput {
  */
 export interface LocalTask {
   id: number;
+  sync_id?: string;
   title: string;
   notes: string | null;
   /** YYYY-MM-DD date string when scheduled on a specific day */
@@ -144,6 +146,7 @@ export interface NotePage {
   page_order: number;
   content: string;
   updated_at: string;
+  deleted_at?: string | null;
 }
 
 export interface WeekImage {
@@ -259,8 +262,16 @@ export interface PlannerBackupPayload {
   exported_at: string;
   tasks: LocalTask[];
   week_images: WeekImage[];
+  local_events?: LocalEvent[];
+  note_pages?: NotePage[];
   /** Legacy compatibility alias if reading an older payload */
   local_tasks?: LocalTask[];
+}
+
+export interface CalendarCachePayload {
+  schema_version: number;
+  exported_at: string;
+  events: GoogleEvent[];
 }
 
 export interface GithubRemoteCheckResult {

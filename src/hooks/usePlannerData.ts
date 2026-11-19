@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { onDatabaseUpdated } from "../db/database";
+import { generateUuid } from "../utils/id";
 import {
   getGoogleEventsInRange,
   setGoogleEventHidden,
@@ -45,7 +46,9 @@ import {
 import {
   onGithubSyncStatus,
   pullAndMergeFromGithub,
+  pushCalendarCacheToGithub,
   queueDebouncedGithubPush,
+  startBackgroundGithubSync,
 } from "../services/githubSyncService";
 import {
   CreateLocalEventInput,
@@ -251,9 +254,14 @@ export function usePlannerData(
         if (
           enableBackgroundSync &&
           (source?.startsWith("local_tasks:") ||
-            source?.startsWith("week_images:"))
+            source?.startsWith("week_images:") ||
+            source?.startsWith("local_events:") ||
+            source?.startsWith("note_pages:"))
         ) {
           void queueDebouncedGithubPush();
+        }
+        if (enableBackgroundSync && source?.startsWith("calendar_events:")) {
+          void pushCalendarCacheToGithub();
         }
       }
     })
@@ -282,6 +290,7 @@ export function usePlannerData(
   useEffect(() => {
     if (!enableBackgroundSync) return;
     let stopIcsSync: (() => void) | undefined;
+    let stopGithubSync: (() => void) | undefined;
     let unlistenGhStatus: (() => void) | undefined;
     let isDisposed = false;
 
@@ -297,12 +306,16 @@ export function usePlannerData(
       }
     });
 
-    // Purge soft-deleted rows older than 30 days on startup & pull latest planner-data.json from GitHub
-    void pullAndMergeFromGithub(true).then(() => {
-      if (!isDisposed) {
-        void reloadData();
-      }
-    });
+    // Purge soft-deleted rows older than 30 days on startup & start 30m + focus GitHub sync
+    try {
+      stopGithubSync = startBackgroundGithubSync(() => {
+        if (!isDisposed) {
+          void reloadData();
+        }
+      });
+    } catch (err) {
+      console.warn("[usePlannerData] startBackgroundGithubSync error:", err);
+    }
 
     try {
       stopIcsSync = startBackgroundIcsSync((status) => {
@@ -323,6 +336,7 @@ export function usePlannerData(
       isDisposed = true;
       try {
         stopIcsSync?.();
+        stopGithubSync?.();
         unlistenGhStatus?.();
       } catch {
         // Ignore cleanup error
@@ -494,6 +508,7 @@ export function usePlannerData(
       const tempId = -Date.now();
       const optimisticTask: LocalTask = {
         id: tempId,
+        sync_id: generateUuid(),
         title: input.title.trim(),
         notes: input.notes ?? null,
         assigned_date: input.assigned_date ?? null,

@@ -5,7 +5,12 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Update } from "@tauri-apps/plugin-updater";
-import { initAccentColorOnBoot } from "../../db/appSettingsRepo";
+import {
+  getAppSettings,
+  initAccentColorOnBoot,
+  saveAppSettings,
+} from "../../db/appSettingsRepo";
+import { syncConfigToRustBackend } from "../../services/githubSyncService";
 import { usePlannerData } from "../../hooks/usePlannerData";
 import {
   fetchWeatherForecast,
@@ -21,6 +26,7 @@ import { WidgetTitlebar } from "../common/WidgetTitlebar";
 import { SettingsModal } from "../common/SettingsModal";
 import { UpdateModal } from "../common/UpdateModal";
 import { WeatherLocationModal } from "../common/WeatherLocationModal";
+import { GithubAuthPromptModal } from "../common/GithubAuthPromptModal";
 import { CalendarSidebar } from "../calendar/CalendarSidebar";
 import { NotesSidebar } from "../notes/NotesSidebar";
 import { WeekBoard } from "./WeekBoard";
@@ -100,6 +106,7 @@ export const PlannerWidget: React.FC = () => {
   const [isNotesOpen, setIsNotesOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isWeatherLocationOpen, setIsWeatherLocationOpen] = useState(false);
+  const [isGithubAuthPromptOpen, setIsGithubAuthPromptOpen] = useState(false);
   const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
   const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
   const [isInstallingUpdate, setIsInstallingUpdate] = useState(false);
@@ -299,6 +306,61 @@ export const PlannerWidget: React.FC = () => {
       unlisten?.();
     };
   }, []);
+
+  const GITHUB_AUTH_PROMPT_STORAGE_KEY = "hobo_github_token_prompt_last_at";
+  const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+  // Prompt once per day if GitHub sync fails due to an expired/invalid Personal Access Token (401/403)
+  useEffect(() => {
+    if (
+      githubSyncStatus.status !== "error" ||
+      !githubSyncStatus.message ||
+      isSettingsOpen
+    ) {
+      return;
+    }
+
+    const msg = githubSyncStatus.message;
+    const isAuthError =
+      msg.includes("401") ||
+      msg.includes("403") ||
+      msg.includes("Unauthorized") ||
+      msg.includes("Forbidden") ||
+      msg.includes("Invalid GitHub token") ||
+      msg.includes("lacks permission");
+
+    if (!isAuthError) {
+      return;
+    }
+
+    try {
+      const lastRaw = localStorage.getItem(GITHUB_AUTH_PROMPT_STORAGE_KEY);
+      const lastTs = lastRaw ? parseInt(lastRaw, 10) : 0;
+      if (!Number.isNaN(lastTs) && Date.now() - lastTs < ONE_DAY_MS) {
+        return;
+      }
+      localStorage.setItem(GITHUB_AUTH_PROMPT_STORAGE_KEY, String(Date.now()));
+    } catch {
+      // Ignore storage errors
+    }
+
+    setIsGithubAuthPromptOpen(true);
+  }, [githubSyncStatus, isSettingsOpen]);
+
+  const handleSwitchToLocalFromPrompt = async () => {
+    setIsGithubAuthPromptOpen(false);
+    try {
+      const current = await getAppSettings();
+      const updated = await saveAppSettings({
+        ...current,
+        storage_mode: "local",
+      });
+      await syncConfigToRustBackend(updated);
+      localStorage.removeItem(GITHUB_AUTH_PROMPT_STORAGE_KEY);
+    } catch (err) {
+      console.warn("[PlannerWidget] Failed to switch to local storage:", err);
+    }
+  };
 
   // Listen for "Settings..." clicked in the System Tray menu
   useEffect(() => {
@@ -542,6 +604,11 @@ export const PlannerWidget: React.FC = () => {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         onSettingsSaved={() => {
+          try {
+            localStorage.removeItem(GITHUB_AUTH_PROMPT_STORAGE_KEY);
+          } catch {
+            // Ignore
+          }
           void manualSync();
         }}
         availableUpdate={availableUpdate}
@@ -572,6 +639,19 @@ export const PlannerWidget: React.FC = () => {
           saveWeatherLocation(loc);
           setIsWeatherLocationOpen(false);
           void fetchWeatherForecast(true).then((data) => setWeather(data));
+        }}
+      />
+
+      <GithubAuthPromptModal
+        isOpen={isGithubAuthPromptOpen}
+        errorMessage={githubSyncStatus.message}
+        onDismiss={() => setIsGithubAuthPromptOpen(false)}
+        onUpdateToken={() => {
+          setIsGithubAuthPromptOpen(false);
+          setIsSettingsOpen(true);
+        }}
+        onSwitchToLocal={() => {
+          void handleSwitchToLocalFromPrompt();
         }}
       />
     </div>
