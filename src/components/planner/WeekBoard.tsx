@@ -52,6 +52,7 @@ interface WeekBoardProps {
   onAddWeekImage: (input: CreateWeekImageInput) => void;
   onUpdateWeekImage: (id: string, updates: UpdateWeekImageInput) => void;
   onDeleteWeekImage: (id: string) => void;
+  onOpenWeatherLocation?: () => void;
   calendarHoverRef?: React.RefObject<{ xPct: number; yPct: number } | null>;
   notesHoverRef?: React.RefObject<{
     pageId: string;
@@ -143,6 +144,7 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
   onAddWeekImage,
   onUpdateWeekImage,
   onDeleteWeekImage,
+  onOpenWeatherLocation,
   calendarHoverRef,
   notesHoverRef,
 }) => {
@@ -567,7 +569,7 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
         >
           <div
             style={{ height: `${totalSevenDaysHeightPx}px` }}
-            className="border-t border-hobo-lineDark flex flex-col shrink-0 pointer-events-none"
+            className="border-t border-b border-hobo-lineDark flex flex-col shrink-0 pointer-events-none"
           >
             {weekDays.map((dStr, idx) => {
               const dayEvents = googleEvents.filter(
@@ -756,8 +758,15 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
               style={{ height: `${dayRowHeightPx}px` }}
               className="relative z-10 shrink-0 pt-1 flex items-end justify-between gap-2 select-none overflow-hidden pointer-events-none"
             >
-              <div className="min-w-0 flex-1 text-[10px] leading-snug text-hobo-muted pointer-events-auto">
-                {currentWeather && (
+              <div
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onOpenWeatherLocation?.();
+                }}
+                className="min-w-0 flex-1 text-[10px] leading-snug text-hobo-muted pointer-events-auto cursor-context-menu"
+              >
+                {currentWeather ? (
                   <div className="group/curweather flex items-start gap-2">
                     <WeatherIcon
                       code={currentWeather.weatherCode}
@@ -777,6 +786,10 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
                       High {currentWeather.tempMax}°C · Low {currentWeather.tempMin}°C.
                     </span>
                   </div>
+                ) : (
+                  <span className="hover:text-hobo-red transition-colors">
+                    Right click to set your location for weather updates
+                  </span>
                 )}
               </div>
 

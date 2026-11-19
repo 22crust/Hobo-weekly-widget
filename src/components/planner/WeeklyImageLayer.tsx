@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { ImageOff, Lock, RotateCw, Unlock, X } from "lucide-react";
 import { UpdateWeekImageInput, WeekImage } from "../../types/planner";
 
@@ -66,14 +66,14 @@ const StickerItem: React.FC<StickerItemProps> = ({
   const [resolvedSrc, setResolvedSrc] = useState<string | null>(
     sticker.is_local_only ? null : sticker.image_url
   );
-  const [isInteracting, setIsInteracting] = useState<boolean>(false);
+  const isInteractingRef = useRef<boolean>(false);
   const [unlockMenuPos, setUnlockMenuPos] = useState<{
     x: number;
     y: number;
   } | null>(null);
 
   useEffect(() => {
-    if (!isInteracting) {
+    if (!isInteractingRef.current) {
       setPosX(sticker.pos_x);
       setPosY(sticker.pos_y);
       setWidthPx(sticker.width || 180);
@@ -94,7 +94,6 @@ const StickerItem: React.FC<StickerItemProps> = ({
     sticker.crop_bottom,
     sticker.crop_left,
     sticker.opacity,
-    isInteracting,
   ]);
 
   useEffect(() => {
@@ -109,21 +108,21 @@ const StickerItem: React.FC<StickerItemProps> = ({
     }
 
     let cancelled = false;
-    void invoke<string>("read_local_image_data_url", {
+    void invoke<boolean>("check_local_file_exists", {
       path: sticker.image_url,
     })
-      .then((dataUrl) => {
-        if (!cancelled) {
-          setResolvedSrc(dataUrl);
-        }
-      })
-      .catch((err) => {
+      .then((exists) => {
         if (cancelled) return;
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes("FILE_NOT_FOUND")) {
+        if (!exists) {
           // Original local file was deleted/removed -> automatically remove sticker
           onDeleteImage(sticker.id);
         } else {
+          // Stream directly from disk via Tauri asset protocol (no base64 copy in RAM)
+          setResolvedSrc(convertFileSrc(sticker.image_url));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
           setHasError(true);
         }
       });
@@ -193,7 +192,7 @@ const StickerItem: React.FC<StickerItemProps> = ({
     const rect = container.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
 
-    setIsInteracting(true);
+    isInteractingRef.current = true;
     const startClientX = e.clientX;
     const startClientY = e.clientY;
     const initialPosX = posX;
@@ -214,7 +213,7 @@ const StickerItem: React.FC<StickerItemProps> = ({
     const onPointerUp = () => {
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", onPointerUp);
-      setIsInteracting(false);
+      isInteractingRef.current = false;
       onUpdateImage(sticker.id, {
         pos_x: Number(latestX.toFixed(2)),
         pos_y: Number(latestY.toFixed(2)),
@@ -239,7 +238,7 @@ const StickerItem: React.FC<StickerItemProps> = ({
     if (!container) return;
     const containerRect = container.getBoundingClientRect();
 
-    setIsInteracting(true);
+    isInteractingRef.current = true;
     const startClientX = e.clientX;
     const initialWidth = widthPx;
     const initialPosX = posX;
@@ -290,7 +289,7 @@ const StickerItem: React.FC<StickerItemProps> = ({
     const onPointerUp = () => {
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", onPointerUp);
-      setIsInteracting(false);
+      isInteractingRef.current = false;
       onUpdateImage(sticker.id, {
         width: latestWidth,
         pos_x: Number(latestPosX.toFixed(2)),
@@ -316,7 +315,7 @@ const StickerItem: React.FC<StickerItemProps> = ({
     if (!container) return;
     const containerRect = container.getBoundingClientRect();
 
-    setIsInteracting(true);
+    isInteractingRef.current = true;
     const startX = e.clientX;
     const startY = e.clientY;
     const initTop = cropTop;
@@ -386,7 +385,7 @@ const StickerItem: React.FC<StickerItemProps> = ({
     const onPointerUp = () => {
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", onPointerUp);
-      setIsInteracting(false);
+      isInteractingRef.current = false;
       onUpdateImage(sticker.id, {
         crop_top: Number(nextTop.toFixed(2)),
         crop_right: Number(nextRight.toFixed(2)),
@@ -413,7 +412,7 @@ const StickerItem: React.FC<StickerItemProps> = ({
     const centerX = rect.left + rect.width / 2;
     const centerY = rect.top + rect.height / 2;
 
-    setIsInteracting(true);
+    isInteractingRef.current = true;
     const startAngleRad = Math.atan2(e.clientY - centerY, e.clientX - centerX);
     const initialRotation = rotationDeg;
     let latestRot = initialRotation;
@@ -432,7 +431,7 @@ const StickerItem: React.FC<StickerItemProps> = ({
     const onPointerUp = () => {
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", onPointerUp);
-      setIsInteracting(false);
+      isInteractingRef.current = false;
       onUpdateImage(sticker.id, {
         rotation: latestRot,
         z_index: nextZ,

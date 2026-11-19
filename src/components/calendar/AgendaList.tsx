@@ -270,13 +270,13 @@ export const AgendaList: React.FC<AgendaListProps> = ({
               className="group py-1 bg-transparent text-hobo-red text-xs space-y-0.5 pointer-events-auto"
             >
               <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0 flex items-baseline gap-2 flex-1">
-                  <span className="font-normal text-[10px] tracking-tight opacity-90 shrink-0">
+                <div className="min-w-0 flex items-center gap-2 flex-1">
+                  <span className="font-normal text-[10px] leading-none tracking-tight opacity-90 shrink-0">
                     {formatEventTimeLabel(ev)}
                   </span>
                   {ev.location && (
-                    <span className="inline-flex items-center gap-0.5 text-[10px] opacity-80 truncate">
-                      <MapPin className="w-2.5 h-2.5 stroke-[1.5] shrink-0" />
+                    <span className="min-w-0 inline-flex items-center gap-0.5 text-[10px] leading-none opacity-80">
+                      <MapPin className="w-2.5 h-2.5 stroke-[1.5] shrink-0 -translate-y-[1px]" />
                       <span className="truncate">{ev.location}</span>
                     </span>
                   )}

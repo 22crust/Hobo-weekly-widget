@@ -1,5 +1,4 @@
-import React, { useRef, useState } from "react";
-import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import React from "react";
 import {
   ChevronDown,
   ChevronLeft,
@@ -22,7 +21,6 @@ interface WidgetTitlebarProps {
   onToggleNotes?: () => void;
   onOpenSettings?: () => void;
   githubSyncStatus?: GithubSyncStatusPayload;
-  defaultExpandedHeight?: number;
 }
 
 export const WidgetTitlebar: React.FC<WidgetTitlebarProps> = ({
@@ -37,47 +35,9 @@ export const WidgetTitlebar: React.FC<WidgetTitlebarProps> = ({
   onToggleNotes,
   onOpenSettings,
   githubSyncStatus,
-  defaultExpandedHeight = 760,
 }) => {
-  const savedSizeRef = useRef<{ width: number; height: number } | null>(null);
-  const [isTogglingSize, setIsTogglingSize] = useState(false);
-
-  const handleToggleCollapse = async () => {
-    if (isTogglingSize) return;
-    setIsTogglingSize(true);
-    const nextCollapsed = !isCollapsed;
-    onToggleCollapse(nextCollapsed);
-
-    try {
-      const win = getCurrentWindow();
-      const factor = await win.scaleFactor();
-      const physicalSize = await win.innerSize();
-      const logicalWidth = Math.round(physicalSize.width / factor);
-      const logicalHeight = Math.round(physicalSize.height / factor);
-
-      if (nextCollapsed) {
-        if (logicalHeight > 60) {
-          savedSizeRef.current = { width: logicalWidth, height: logicalHeight };
-        }
-        await win.setSize(new LogicalSize(logicalWidth, 28));
-      } else {
-        const restoreHeight = savedSizeRef.current?.height ?? defaultExpandedHeight;
-        const restoreWidth = savedSizeRef.current?.width ?? logicalWidth;
-        await win.setSize(new LogicalSize(restoreWidth, restoreHeight));
-      }
-    } catch {
-      // Fallback in standard browser preview
-    } finally {
-      setIsTogglingSize(false);
-    }
-  };
-
-  const handleHideToTray = async () => {
-    try {
-      await getCurrentWindow().hide();
-    } catch {
-      // Ignore outside Tauri
-    }
+  const handleToggleCollapse = () => {
+    onToggleCollapse(!isCollapsed);
   };
 
   const formatGithubTooltip = (st: GithubSyncStatusPayload): string => {
@@ -119,25 +79,25 @@ export const WidgetTitlebar: React.FC<WidgetTitlebarProps> = ({
       data-tauri-drag-region
       className="h-6 flex items-center bg-transparent text-hobo-muted select-none shrink-0"
     >
-      {/* When the Monthly Calendar sidebar is open, show "CALENDAR" directly above the 340px monthly column */}
-      {isCalendarOpen && (
-        <div
-          data-tauri-drag-region
-          className="w-[340px] shrink-0 h-full px-3.5 flex items-center cursor-move"
-        >
+      {/* Fixed 340px Left Calendar Titlebar Slot (clipped by SetWindowRgn when closed) */}
+      <div
+        data-tauri-drag-region
+        className="w-[340px] shrink-0 h-full px-3.5 flex items-center cursor-move"
+      >
+        {isCalendarOpen && (
           <span
             data-tauri-drag-region
             className="text-[10px] leading-none tracking-[0.16em] uppercase text-hobo-muted/80"
           >
             CALENDAR
           </span>
-        </div>
-      )}
+        )}
+      </div>
 
-      {/* Main Weekly Planner Titlebar Header */}
+      {/* Center Weekly Planner Titlebar Header */}
       <div
         data-tauri-drag-region
-        className="flex-1 h-full px-2.5 flex items-center justify-between cursor-move"
+        className="flex-1 min-w-[620px] h-full px-2.5 flex items-center justify-between cursor-move"
       >
         <div
           data-tauri-drag-region
@@ -232,13 +192,11 @@ export const WidgetTitlebar: React.FC<WidgetTitlebarProps> = ({
         </div>
       </div>
 
-      {/* When the Notes sidebar is open, reserve the matching 340px drag-region strip on the right */}
-      {isNotesOpen && (
-        <div
-          data-tauri-drag-region
-          className="w-[340px] shrink-0 h-full px-3.5 flex items-center cursor-move"
-        />
-      )}
+      {/* Fixed 340px Right Notes Titlebar Slot (clipped by SetWindowRgn when closed) */}
+      <div
+        data-tauri-drag-region
+        className="w-[340px] shrink-0 h-full px-3.5 flex items-center cursor-move"
+      />
     </div>
   );
 };

@@ -7,7 +7,7 @@ use github_sync::{
     pull_merge_and_push_to_github, queue_debounced_github_push, sync_to_github_now,
     test_github_connection, GithubSyncState,
 };
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -251,37 +251,75 @@ fn get_migrations() -> Vec<Migration> {
     ]
 }
 
+/// Zero-allocation check for whether a local-PC sticker file still exists on disk.
 #[tauri::command]
-fn read_local_image_data_url(path: String) -> Result<String, String> {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
-    use std::path::Path;
+fn check_local_file_exists(path: String) -> bool {
+    std::path::Path::new(&path).is_file()
+}
 
-    let file_path = Path::new(&path);
-    if !file_path.exists() || !file_path.is_file() {
-        return Err("FILE_NOT_FOUND".to_string());
+pub struct PlannerRegionState(pub Mutex<(bool, bool, bool)>);
+
+fn apply_planner_region(
+    win: &tauri::WebviewWindow,
+    show_calendar: bool,
+    show_notes: bool,
+    is_collapsed: bool,
+) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::ffi::c_void;
+        extern "system" {
+            fn CreateRectRgn(left: i32, top: i32, right: i32, bottom: i32) -> *mut c_void;
+            fn SetWindowRgn(hwnd: *mut c_void, hrgn: *mut c_void, redraw: i32) -> i32;
+        }
+        let Ok(size) = win.inner_size() else { return };
+        let factor = win.scale_factor().unwrap_or(1.0);
+        let side_f = 340.0 * factor;
+        let left = if show_calendar {
+            0
+        } else {
+            (side_f.floor() as i32 - 1).max(0)
+        };
+        let right = if show_notes {
+            size.width as i32 + 1
+        } else {
+            ((size.width as f64) - side_f).ceil().max((left + 100) as f64) as i32 + 1
+        };
+        let bottom = if is_collapsed {
+            (28.0 * factor).ceil() as i32 + 1
+        } else {
+            size.height as i32 + 1
+        };
+
+        if let Ok(hwnd) = win.hwnd() {
+            unsafe {
+                let rgn = CreateRectRgn(left, 0, right, bottom);
+                if !rgn.is_null() {
+                    SetWindowRgn(hwnd.0 as *mut c_void, rgn, 1);
+                }
+            }
+        }
     }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (win, show_calendar, show_notes, is_collapsed);
+    }
+}
 
-    let bytes = std::fs::read(file_path).map_err(|e| format!("READ_ERROR: {e}"))?;
-    let ext = file_path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-
-    let mime = match ext.as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "svg" => "image/svg+xml",
-        "bmp" => "image/bmp",
-        "ico" => "image/x-icon",
-        "avif" => "image/avif",
-        _ => "application/octet-stream",
-    };
-
-    let encoded = STANDARD.encode(bytes);
-    Ok(format!("data:{mime};base64,{encoded}"))
+#[tauri::command]
+fn set_planner_visible_region(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, PlannerRegionState>,
+    show_calendar: bool,
+    show_notes: bool,
+    is_collapsed: bool,
+) {
+    if let Ok(mut guard) = state.0.lock() {
+        *guard = (show_calendar, show_notes, is_collapsed);
+    }
+    if let Some(win) = app.get_webview_window("planner-widget") {
+        apply_planner_region(&win, show_calendar, show_notes, is_collapsed);
+    }
 }
 
 /// Creates a local safety backup (`planner.db.bak`) in AppLocalData before installing an app update.
@@ -319,9 +357,11 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(github_state)
+        .manage(PlannerRegionState(Mutex::new((false, false, false))))
         .invoke_handler(tauri::generate_handler![
             fetch_calendar_ics_feed,
-            read_local_image_data_url,
+            check_local_file_exists,
+            set_planner_visible_region,
             backup_planner_db,
             configure_github_sync,
             test_github_connection,
@@ -348,26 +388,39 @@ pub fn run() {
                 .build(),
         )
         .on_window_event(|window, event| {
-            // Intercept CloseRequested (X or Alt+F4) so the widget hides instead of terminating the tray process
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+            match event {
+                // Intercept CloseRequested (X or Alt+F4) so the widget hides instead of terminating the tray process
+                WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                WindowEvent::Resized(_) => {
+                    if window.label() == "planner-widget" {
+                        let app = window.app_handle();
+                        if let Some(state) = app.try_state::<PlannerRegionState>() {
+                            if let Ok(guard) = state.0.lock() {
+                                let (cal, notes, collapsed) = *guard;
+                                if let Some(wv) = app.get_webview_window("planner-widget") {
+                                    apply_planner_region(&wv, cal, notes, collapsed);
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         })
         .setup(|app| {
-            for label in ["planner-widget", "calendar-widget"] {
-                if let Some(win) = app.get_webview_window(label) {
-                    let _ = win.set_decorations(false);
-                    let _ = win.set_shadow(false);
-                    let _ = win.set_always_on_bottom(true);
-                    let _ = win.set_skip_taskbar(true);
-                    if label == "planner-widget" {
-                        let _ = win.set_size(Size::Logical(LogicalSize::new(760.0, 760.0)));
-                        let _ = win.set_position(Position::Physical(PhysicalPosition::new(450, 100)));
-                    }
-                    let _ = win.show();
-                    let _ = win.unminimize();
-                }
+            if let Some(win) = app.get_webview_window("planner-widget") {
+                let _ = win.set_decorations(false);
+                let _ = win.set_shadow(false);
+                let _ = win.set_always_on_bottom(true);
+                let _ = win.set_skip_taskbar(true);
+                let _ = win.set_size(Size::Logical(LogicalSize::new(1440.0, 760.0)));
+                let _ = win.set_position(Position::Physical(PhysicalPosition::new(110, 100)));
+                apply_planner_region(&win, false, false, false);
+                let _ = win.show();
+                let _ = win.unminimize();
             }
 
             let initial_autostart = app

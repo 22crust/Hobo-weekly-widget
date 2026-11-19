@@ -1,12 +1,16 @@
 import React, { useEffect, useRef, useState } from "react";
 import { addWeeks, endOfWeek, format, startOfWeek, subWeeks } from "date-fns";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { getCurrentWindow, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Update } from "@tauri-apps/plugin-updater";
 import { initAccentColorOnBoot } from "../../db/appSettingsRepo";
 import { usePlannerData } from "../../hooks/usePlannerData";
-import { fetchWeatherForecast } from "../../services/weatherService";
+import {
+  fetchWeatherForecast,
+  saveWeatherLocation,
+} from "../../services/weatherService";
 import {
   checkForAppUpdate,
   installAppUpdate,
@@ -16,12 +20,77 @@ import { WeatherData } from "../../types/planner";
 import { WidgetTitlebar } from "../common/WidgetTitlebar";
 import { SettingsModal } from "../common/SettingsModal";
 import { UpdateModal } from "../common/UpdateModal";
+import { WeatherLocationModal } from "../common/WeatherLocationModal";
 import { CalendarSidebar } from "../calendar/CalendarSidebar";
 import { NotesSidebar } from "../notes/NotesSidebar";
 import { WeekBoard } from "./WeekBoard";
 
 const CALENDAR_SIDEBAR_LOGICAL_WIDTH = 340;
 const NOTES_SIDEBAR_LOGICAL_WIDTH = 340;
+
+/**
+ * Renders a razor-sharp 1-physical-pixel window outline across all 4 visible sides
+ * of the active `SetWindowRgn` region so borders never thicken or clip at any window size or DPI.
+ */
+const CrispWindowBorder: React.FC<{
+  leftOffsetPx: number;
+  rightOffsetPx: number;
+}> = ({ leftOffsetPx, rightOffsetPx }) => {
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el) return;
+    const update = () => {
+      const rect = el.getBoundingClientRect();
+      setSize({ w: rect.width, h: rect.height });
+    };
+    update();
+    const obs = new ResizeObserver(update);
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [leftOffsetPx, rightOffsetPx]);
+
+  const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+  const onePx = 1 / dpr;
+  const xLeft = 0.5 / dpr;
+  const yTop = 0.5 / dpr;
+  const xRight = Math.max(
+    xLeft + onePx,
+    (Math.floor(size.w * dpr) - 0.5) / dpr
+  );
+  const yBottom = Math.max(
+    yTop + onePx,
+    (Math.floor(size.h * dpr) - 0.5) / dpr
+  );
+
+  return (
+    <div
+      ref={boxRef}
+      style={{
+        left: `${leftOffsetPx}px`,
+        right: `${rightOffsetPx}px`,
+      }}
+      className="pointer-events-none absolute top-0 bottom-0 z-50"
+    >
+      {size.w > 2 && size.h > 2 && (
+        <svg
+          width={size.w}
+          height={size.h}
+          viewBox={`0 0 ${size.w} ${size.h}`}
+          shapeRendering="crispEdges"
+          className="block w-full h-full"
+        >
+          <line x1={0} y1={yTop} x2={size.w} y2={yTop} stroke="#B5AFA0" strokeWidth={onePx} />
+          <line x1={0} y1={yBottom} x2={size.w} y2={yBottom} stroke="#B5AFA0" strokeWidth={onePx} />
+          <line x1={xLeft} y1={0} x2={xLeft} y2={size.h} stroke="#B5AFA0" strokeWidth={onePx} />
+          <line x1={xRight} y1={0} x2={xRight} y2={size.h} stroke="#B5AFA0" strokeWidth={onePx} />
+        </svg>
+      )}
+    </div>
+  );
+};
 const DEFAULT_SQUARE_SIZE = 760;
 
 export const PlannerWidget: React.FC = () => {
@@ -30,12 +99,12 @@ export const PlannerWidget: React.FC = () => {
   const [isCalendarOpen, setIsCalendarOpen] = useState(false);
   const [isNotesOpen, setIsNotesOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isWeatherLocationOpen, setIsWeatherLocationOpen] = useState(false);
   const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
   const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
   const [isInstallingUpdate, setIsInstallingUpdate] = useState(false);
   const [updateProgressPct, setUpdateProgressPct] = useState<number | null>(null);
   const [updateError, setUpdateError] = useState<string | null>(null);
-  const [isAnimatingDrawer, setIsAnimatingDrawer] = useState(false);
   const calendarHoverRef = useRef<{ xPct: number; yPct: number } | null>(null);
   const notesHoverRef = useRef<{
     pageId: string;
@@ -99,20 +168,16 @@ export const PlannerWidget: React.FC = () => {
     setIsUpdateModalOpen(false);
   };
 
-  // Ensure the window starts square (matching its current height, default 760x760)
+  // Sync visible Win32 SetWindowRgn whenever Calendar, Notes, or Collapse state changes (zero window resize!)
   useEffect(() => {
-    void (async () => {
-      try {
-        const win = getCurrentWindow();
-        const size = await win.innerSize();
-        if (size.height > 200 && Math.abs(size.width - size.height) > 4) {
-          await win.setSize(new PhysicalSize(size.height, size.height));
-        }
-      } catch {
-        // Ignore outside Tauri
-      }
-    })();
-  }, []);
+    void invoke("set_planner_visible_region", {
+      showCalendar: isCalendarOpen,
+      showNotes: isNotesOpen,
+      isCollapsed,
+    }).catch(() => {
+      // Ignore outside Tauri
+    });
+  }, [isCalendarOpen, isNotesOpen, isCollapsed]);
 
   const weekStart = startOfWeek(currentWeekDate, { weekStartsOn: 1 });
   const weekEnd = endOfWeek(currentWeekDate, { weekStartsOn: 1 });
@@ -288,68 +353,64 @@ export const PlannerWidget: React.FC = () => {
     ]);
   };
 
-  const handleToggleCalendar = async () => {
-    if (isAnimatingDrawer) return;
-    setIsAnimatingDrawer(true);
-    const nextOpen = !isCalendarOpen;
-    setIsCalendarOpen(nextOpen);
-
-    try {
-      const win = getCurrentWindow();
-      const factor = await win.scaleFactor();
-      const pos = await win.outerPosition();
-      const size = await win.innerSize();
-      const deltaPhysicalWidth = Math.round(CALENDAR_SIDEBAR_LOGICAL_WIDTH * factor);
-
-      if (nextOpen) {
-        const nextX = pos.x - deltaPhysicalWidth;
-        const nextWidth = size.width + deltaPhysicalWidth;
-        await win.setPosition(new PhysicalPosition(nextX, pos.y));
-        await win.setSize(new PhysicalSize(nextWidth, size.height));
-      } else {
-        const nextWidth = Math.max(Math.round(620 * factor), size.width - deltaPhysicalWidth);
-        const nextX = pos.x + deltaPhysicalWidth;
-        await win.setSize(new PhysicalSize(nextWidth, size.height));
-        await win.setPosition(new PhysicalPosition(nextX, pos.y));
-      }
-    } catch {
-      // Fallback in standard browser preview
-    } finally {
-      setIsAnimatingDrawer(false);
-    }
+  const handleToggleCalendar = () => {
+    setIsCalendarOpen((v) => !v);
   };
 
-  const handleToggleNotes = async () => {
-    if (isAnimatingDrawer) return;
-    setIsAnimatingDrawer(true);
-    const nextOpen = !isNotesOpen;
-    setIsNotesOpen(nextOpen);
+  const handleToggleNotes = () => {
+    setIsNotesOpen((v) => !v);
+  };
 
-    try {
-      const win = getCurrentWindow();
-      const factor = await win.scaleFactor();
-      const size = await win.innerSize();
-      const deltaPhysicalWidth = Math.round(NOTES_SIDEBAR_LOGICAL_WIDTH * factor);
-
-      if (nextOpen) {
-        const nextWidth = size.width + deltaPhysicalWidth;
-        await win.setSize(new PhysicalSize(nextWidth, size.height));
-      } else {
-        const minTotalWidth = Math.round(
-          (620 + (isCalendarOpen ? CALENDAR_SIDEBAR_LOGICAL_WIDTH : 0)) * factor
-        );
-        const nextWidth = Math.max(minTotalWidth, size.width - deltaPhysicalWidth);
-        await win.setSize(new PhysicalSize(nextWidth, size.height));
-      }
-    } catch {
-      // Fallback in standard browser preview
-    } finally {
-      setIsAnimatingDrawer(false);
-    }
+  const startEdgeResize = (direction: "West" | "East" | "South") => {
+    void getCurrentWindow()
+      .startResizeDragging(direction)
+      .catch(() => {
+        // Ignore outside Tauri
+      });
   };
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-hobo-paper window-frame-border text-hobo-ink overflow-hidden box-border">
+    <div className="relative h-screen w-screen flex flex-col bg-hobo-paper text-hobo-ink overflow-hidden box-border">
+      {/* Crisp 1-physical-pixel window outline across all 4 sides of the active clipped region */}
+      <CrispWindowBorder
+        leftOffsetPx={isCalendarOpen ? 0 : CALENDAR_SIDEBAR_LOGICAL_WIDTH}
+        rightOffsetPx={isNotesOpen ? 0 : NOTES_SIDEBAR_LOGICAL_WIDTH}
+      />
+
+      {/* Custom Edge Resize Grips on the Visible Left, Right, and Bottom Edges */}
+      {!isCollapsed && (
+        <>
+          <div
+            onPointerDown={(e) => {
+              if (e.button === 0) startEdgeResize("West");
+            }}
+            style={{
+              left: isCalendarOpen ? "0px" : `${CALENDAR_SIDEBAR_LOGICAL_WIDTH}px`,
+            }}
+            className="absolute top-0 bottom-0 w-[5px] z-50 cursor-ew-resize"
+          />
+          <div
+            onPointerDown={(e) => {
+              if (e.button === 0) startEdgeResize("East");
+            }}
+            style={{
+              right: isNotesOpen ? "0px" : `${NOTES_SIDEBAR_LOGICAL_WIDTH}px`,
+            }}
+            className="absolute top-0 bottom-0 w-[5px] z-50 cursor-ew-resize"
+          />
+          <div
+            onPointerDown={(e) => {
+              if (e.button === 0) startEdgeResize("South");
+            }}
+            style={{
+              left: isCalendarOpen ? "0px" : `${CALENDAR_SIDEBAR_LOGICAL_WIDTH}px`,
+              right: isNotesOpen ? "0px" : `${NOTES_SIDEBAR_LOGICAL_WIDTH}px`,
+            }}
+            className="absolute bottom-0 h-[5px] z-50 cursor-ns-resize"
+          />
+        </>
+      )}
+
       <WidgetTitlebar
         title="WEEKLY PLANNER"
         isSyncing={syncStatus.isSyncing}
@@ -362,20 +423,23 @@ export const PlannerWidget: React.FC = () => {
         onToggleNotes={handleToggleNotes}
         onOpenSettings={() => setIsSettingsOpen(true)}
         githubSyncStatus={githubSyncStatus}
-        defaultExpandedHeight={760}
       />
 
       {!isCollapsed && (
-        <div className="flex-1 min-h-0 flex flex-row overflow-hidden p-[1px]">
-          {isCalendarOpen && (
-            <CalendarSidebar
-              onHoverChange={(cursor) => {
-                calendarHoverRef.current = cursor;
-              }}
-            />
-          )}
+        <div className="flex-1 min-h-0 flex flex-row overflow-hidden">
+          {/* Fixed 340px Left Calendar Slot (clipped away by SetWindowRgn when closed) */}
+          <div className="w-[340px] shrink-0 h-full overflow-hidden">
+            {isCalendarOpen && (
+              <CalendarSidebar
+                onHoverChange={(cursor) => {
+                  calendarHoverRef.current = cursor;
+                }}
+              />
+            )}
+          </div>
 
-          <WeekBoard
+          <div className="flex-1 min-w-[620px] h-full flex flex-col overflow-hidden">
+            <WeekBoard
             weekStartDate={weekStartStr}
             weekEndDate={weekEndStr}
             googleEvents={googleEvents}
@@ -457,15 +521,20 @@ export const PlannerWidget: React.FC = () => {
             onAddWeekImage={(input) => addWeekImage(input)}
             onUpdateWeekImage={(id, updates) => editWeekImage(id, updates)}
             onDeleteWeekImage={(id) => removeWeekImage(id)}
+            onOpenWeatherLocation={() => setIsWeatherLocationOpen(true)}
           />
+          </div>
 
-          {isNotesOpen && (
-            <NotesSidebar
-              onHoverChange={(cursor) => {
-                notesHoverRef.current = cursor;
-              }}
-            />
-          )}
+          {/* Fixed 340px Right Notes Slot (clipped away by SetWindowRgn when closed) */}
+          <div className="w-[340px] shrink-0 h-full overflow-hidden">
+            {isNotesOpen && (
+              <NotesSidebar
+                onHoverChange={(cursor) => {
+                  notesHoverRef.current = cursor;
+                }}
+              />
+            )}
+          </div>
         </div>
       )}
 
@@ -494,6 +563,16 @@ export const PlannerWidget: React.FC = () => {
           void handleInstallAvailableUpdate();
         }}
         onSkip={handleSkipAvailableUpdate}
+      />
+
+      <WeatherLocationModal
+        isOpen={isWeatherLocationOpen}
+        onClose={() => setIsWeatherLocationOpen(false)}
+        onSelectLocation={(loc) => {
+          saveWeatherLocation(loc);
+          setIsWeatherLocationOpen(false);
+          void fetchWeatherForecast(true).then((data) => setWeather(data));
+        }}
       />
     </div>
   );

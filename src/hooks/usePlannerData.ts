@@ -100,11 +100,62 @@ export function usePlannerData(
   rangeRef.current = { startDate, endDate };
   const requestSeqRef = useRef(0);
 
-  const reloadData = useCallback(async () => {
+  const reloadData = useCallback(async (source?: string) => {
     const seq = ++requestSeqRef.current;
     const { startDate: activeStart, endDate: activeEnd } = rangeRef.current;
 
+    const isTaskOnlyUpdate = Boolean(source?.startsWith("local_tasks:"));
+    const isImageOnlyUpdate = Boolean(source?.startsWith("week_images:"));
+
     try {
+      if (isTaskOnlyUpdate) {
+        const [rangeTasks, weekTasks, longTermTasks] = await Promise.all([
+          getLocalTasksInRange(activeStart, activeEnd, false).catch(() => [] as LocalTask[]),
+          enableBackgroundSync
+            ? getWeeklySidebarTasks(activeStart, activeEnd).catch(() => [] as LocalTask[])
+            : Promise.resolve([] as LocalTask[]),
+          enableBackgroundSync
+            ? getLongTermSidebarTasks().catch(() => [] as LocalTask[])
+            : Promise.resolve([] as LocalTask[]),
+        ]);
+
+        if (
+          seq !== requestSeqRef.current ||
+          rangeRef.current.startDate !== activeStart ||
+          rangeRef.current.endDate !== activeEnd
+        ) {
+          return;
+        }
+        setDatedTasks(rangeTasks);
+        if (enableBackgroundSync) {
+          setWeeklySidebarTasks(weekTasks);
+          setLongTermSidebarTasks(longTermTasks);
+        }
+        return;
+      }
+
+      if (isImageOnlyUpdate) {
+        const [stickers, calStickers] = await Promise.all([
+          enableBackgroundSync
+            ? getWeekImagesForWeek(activeStart).catch(() => [] as WeekImage[])
+            : Promise.resolve([] as WeekImage[]),
+          !enableBackgroundSync
+            ? getWeekImagesForWeek("calendar-permanent").catch(() => [] as WeekImage[])
+            : Promise.resolve([] as WeekImage[]),
+        ]);
+
+        if (
+          seq !== requestSeqRef.current ||
+          rangeRef.current.startDate !== activeStart ||
+          rangeRef.current.endDate !== activeEnd
+        ) {
+          return;
+        }
+        if (enableBackgroundSync) setWeekImages(stickers);
+        else setCalendarImages(calStickers);
+        return;
+      }
+
       const [
         externalEvents,
         localEvents,
@@ -126,22 +177,30 @@ export function usePlannerData(
           console.warn("[usePlannerData] getLocalTasksInRange fallback:", err);
           return [] as LocalTask[];
         }),
-        getWeeklySidebarTasks(activeStart, activeEnd).catch((err) => {
-          console.warn("[usePlannerData] getWeeklySidebarTasks fallback:", err);
-          return [] as LocalTask[];
-        }),
-        getLongTermSidebarTasks().catch((err) => {
-          console.warn("[usePlannerData] getLongTermSidebarTasks fallback:", err);
-          return [] as LocalTask[];
-        }),
-        getWeekImagesForWeek(activeStart).catch((err) => {
-          console.warn("[usePlannerData] getWeekImagesForWeek fallback:", err);
-          return [] as WeekImage[];
-        }),
-        getWeekImagesForWeek("calendar-permanent").catch((err) => {
-          console.warn("[usePlannerData] getCalendarImages fallback:", err);
-          return [] as WeekImage[];
-        }),
+        enableBackgroundSync
+          ? getWeeklySidebarTasks(activeStart, activeEnd).catch((err) => {
+              console.warn("[usePlannerData] getWeeklySidebarTasks fallback:", err);
+              return [] as LocalTask[];
+            })
+          : Promise.resolve([] as LocalTask[]),
+        enableBackgroundSync
+          ? getLongTermSidebarTasks().catch((err) => {
+              console.warn("[usePlannerData] getLongTermSidebarTasks fallback:", err);
+              return [] as LocalTask[];
+            })
+          : Promise.resolve([] as LocalTask[]),
+        enableBackgroundSync
+          ? getWeekImagesForWeek(activeStart).catch((err) => {
+              console.warn("[usePlannerData] getWeekImagesForWeek fallback:", err);
+              return [] as WeekImage[];
+            })
+          : Promise.resolve([] as WeekImage[]),
+        !enableBackgroundSync
+          ? getWeekImagesForWeek("calendar-permanent").catch((err) => {
+              console.warn("[usePlannerData] getCalendarImages fallback:", err);
+              return [] as WeekImage[];
+            })
+          : Promise.resolve([] as WeekImage[]),
       ]);
 
       const mergedEvents = [...externalEvents, ...localEvents].sort((a, b) => {
@@ -175,7 +234,7 @@ export function usePlannerData(
         setIsLoading(false);
       }
     }
-  }, []);
+  }, [enableBackgroundSync]);
 
   useEffect(() => {
     void reloadData();
@@ -188,7 +247,7 @@ export function usePlannerData(
 
     void onDatabaseUpdated((source) => {
       if (!isDisposed) {
-        void reloadData();
+        void reloadData(source);
         if (
           enableBackgroundSync &&
           (source?.startsWith("local_tasks:") ||
@@ -431,10 +490,44 @@ export function usePlannerData(
     },
     // Local Task mutations
     addTask: async (input: CreateLocalTaskInput) => {
+      const nowIso = new Date().toISOString();
+      const tempId = -Date.now();
+      const optimisticTask: LocalTask = {
+        id: tempId,
+        title: input.title.trim(),
+        notes: input.notes ?? null,
+        assigned_date: input.assigned_date ?? null,
+        assigned_week_start: input.assigned_week_start ?? null,
+        is_long_term: Boolean(input.is_long_term),
+        start_time: input.start_time ?? null,
+        end_time: input.end_time ?? null,
+        is_completed: false,
+        show_in_weekly: input.show_in_weekly,
+        show_in_sidebar: input.show_in_sidebar,
+        sort_order: 0,
+        created_at: nowIso,
+        updated_at: nowIso,
+        deleted_at: null,
+      };
+
+      if (input.show_in_weekly && input.assigned_date) {
+        setDatedTasks((prev) => [...prev, optimisticTask]);
+      }
+      if (input.show_in_sidebar) {
+        if (input.is_long_term) {
+          setLongTermSidebarTasks((prev) => [...prev, optimisticTask]);
+        } else {
+          setWeeklySidebarTasks((prev) => [...prev, optimisticTask]);
+        }
+      }
+
       try {
         return await createLocalTask(input);
       } catch (e) {
         console.error("[usePlannerData] addTask failed:", e);
+        setDatedTasks((prev) => prev.filter((t) => t.id !== tempId));
+        setWeeklySidebarTasks((prev) => prev.filter((t) => t.id !== tempId));
+        setLongTermSidebarTasks((prev) => prev.filter((t) => t.id !== tempId));
         return 0;
       }
     },
@@ -446,6 +539,11 @@ export function usePlannerData(
       }
     },
     toggleTask: async (id: number, isCompleted: boolean) => {
+      const updateList = (list: LocalTask[]) =>
+        list.map((t) => (t.id === id ? { ...t, is_completed: isCompleted } : t));
+      setDatedTasks(updateList);
+      setWeeklySidebarTasks(updateList);
+      setLongTermSidebarTasks(updateList);
       try {
         await toggleLocalTaskCompletion(id, isCompleted);
       } catch (e) {
@@ -457,6 +555,24 @@ export function usePlannerData(
       assignedDate: string,
       keepInSidebar?: boolean
     ) => {
+      const all = [...datedTasks, ...weeklySidebarTasks, ...longTermSidebarTasks];
+      const target = all.find((t) => t.id === id);
+      if (target) {
+        const moved: LocalTask = {
+          ...target,
+          assigned_date: assignedDate,
+          show_in_weekly: true,
+          show_in_sidebar: Boolean(keepInSidebar),
+        };
+        setDatedTasks((prev) => [
+          ...prev.filter((t) => t.id !== id),
+          moved,
+        ]);
+        if (!keepInSidebar) {
+          setWeeklySidebarTasks((prev) => prev.filter((t) => t.id !== id));
+          setLongTermSidebarTasks((prev) => prev.filter((t) => t.id !== id));
+        }
+      }
       try {
         await moveLocalTaskToDate(id, assignedDate, keepInSidebar);
       } catch (e) {
@@ -471,6 +587,34 @@ export function usePlannerData(
         keepInDayColumn?: boolean;
       }
     ) => {
+      const all = [...datedTasks, ...weeklySidebarTasks, ...longTermSidebarTasks];
+      const target = all.find((t) => t.id === id);
+      if (target) {
+        const moved: LocalTask = {
+          ...target,
+          assigned_date: options.keepInDayColumn ? target.assigned_date : null,
+          assigned_week_start: options.isLongTerm ? null : options.weekStartDate,
+          is_long_term: options.isLongTerm,
+          show_in_weekly: Boolean(options.keepInDayColumn),
+          show_in_sidebar: true,
+        };
+        if (!options.keepInDayColumn) {
+          setDatedTasks((prev) => prev.filter((t) => t.id !== id));
+        }
+        if (options.isLongTerm) {
+          setWeeklySidebarTasks((prev) => prev.filter((t) => t.id !== id));
+          setLongTermSidebarTasks((prev) => [
+            ...prev.filter((t) => t.id !== id),
+            moved,
+          ]);
+        } else {
+          setLongTermSidebarTasks((prev) => prev.filter((t) => t.id !== id));
+          setWeeklySidebarTasks((prev) => [
+            ...prev.filter((t) => t.id !== id),
+            moved,
+          ]);
+        }
+      }
       try {
         await moveLocalTaskToSidebar(id, options);
       } catch (e) {
@@ -499,6 +643,9 @@ export function usePlannerData(
       }
     },
     removeTask: async (id: number) => {
+      setDatedTasks((prev) => prev.filter((t) => t.id !== id));
+      setWeeklySidebarTasks((prev) => prev.filter((t) => t.id !== id));
+      setLongTermSidebarTasks((prev) => prev.filter((t) => t.id !== id));
       try {
         await deleteLocalTask(id);
       } catch (e) {

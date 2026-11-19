@@ -93,10 +93,10 @@ export const DayColumn: React.FC<DayColumnProps> = ({
     <div
       ref={rowRef}
       data-task-drop-zone={`day:${dateStr}`}
-      style={{ height: `${rowHeightPx}px` }}
-      className={`relative shrink-0 flex border-b border-hobo-lineDark transition-colors ${
-        isToday ? "bg-hobo-redSoft" : "bg-transparent"
-      }`}
+      style={{ height: dayIndex < 6 ? `${rowHeightPx}px` : undefined }}
+      className={`relative flex transition-colors ${
+        dayIndex < 6 ? "shrink-0 border-b border-hobo-lineDark" : "flex-1 min-h-0"
+      } ${isToday ? "bg-hobo-redSoft" : "bg-transparent"}`}
     >
       {/* Left Date Column matching Hobonichi Weeks (21 / MON / 月 / Weather Icon + custom red-text hover)
           Note: border-r is at the default layer (no z-10) so stickers render on top of the day separator line,
