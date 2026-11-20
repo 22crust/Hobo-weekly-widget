@@ -1,0 +1,60 @@
+{
+  "title": "Setup Tutorial",
+  "sections": [
+    {
+      "heading": "Allow widget to start on launch",
+      "steps": [
+        "Look for the Hobonichi icon in the Windows System Tray (^ arrow on bottom right corner of the taskbar)",
+        "Right click to enable 'Launch on Startup.'"
+      ]
+    },
+    {
+      "heading": "Set up external calendar",
+      "steps": [
+        "GOOGLE: Open google calendar, navigate to My calendars in the left sidebar > Click the three dots > Settings and sharing. Scroll to Integrate calendar > Secret address in iCal format. Copy this address and paste into the planner settings.",
+        "OUTLOOK: Open outlook calendar on WEB version (not desktop/mobile app). Click settings > Calendar > Shared calendars > Publish a calendar > select desired calendar. Choose Can view all details. Click Publish. Copy the .ics address (NOT the .html link) and paste into the planner settings.",
+        "APPLE: Open apple calendar on WEB version (not desktop/mobile app). Hover over the desired calendar in the left sidebar. Click the share icon, toggle Public Calendar on (does not actually make the calendar public, it just allows anyone with the private link to view). Copy the address and paste into the planner settings.",
+        "Do not share this ical address with anyone.",
+        "This will allow the planner to read your calendar, but does not allow it to make edits!"
+      ]
+    },
+    {
+      "heading": "Mobile app setup",
+      "steps": [
+        "Open 22crust.github.io/Hobo-weekly-widget on your phone.",
+        "APPLE: Share > Add to Home Screen > Add.",
+        "ANDROID: Three dots > Add to Home screen or Install App.",
+        "Open planner settings, switch to GitHub Backup & Sync, enter the exact same GitHub username, repository name, and token as in the desktop widget (explained below)."
+      ]
+    },
+    {
+      "heading": "GitHub Backup & Sync - optional if only using one device, but required if you want to use multiple devices",
+      "steps": [
+        "Create a github account (free)",
+        "Click + icon in the top right corner to create a new repository.",
+        "Name it (e.g. planner-data).",
+        "IMPORTANT: select Private.",
+        "Check the box that says Add a README file.",
+        "Click Create repository.",
+        "Click on your profile at the top right > Settings.",
+        "Click Developer Settings at the bottom of the left sidebar.",
+        "Personal access tokens > Fine-grained tokens > Generate new token",
+        "Name the new token (e.g. Planner data) and set an expiration period (or no expiration). You will need to regenerate the token after this period.",
+        "Repository access > Only select repositories > select the private repository you just made.",
+        "Permissions > Repository permissions > select Contents. Change access to Read and write.",
+        "Click Generate token at the bottom, and copy and paste it into the planner settings of ALL devices you want to sync.",
+        "You'll be able to copy it from the planner settings at any time. If you lose it, you can regenerate the token, so don't worry too much.",
+        "If you want to keep your different devices planners separate (no sync) but still want an online backup, just create new repositories for each device."
+      ]
+    },
+    {
+      "heading": "Other features & tips",
+      "steps": [
+        "Most image types and gifs are supported as stickers. yay!",
+        "Stickers pasted using an image URL will be shared between synced desktop widgets.",
+        "Stickers dragged and dropped from your local files will only show up on the device they were placed from.",
+        "Mobile version doesn't support stickers."
+      ]
+    }
+  ]
+}

@@ -1,5 +1,5 @@
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use reqwest::header::{ACCEPT, AUTHORIZATION, ETAG, IF_NONE_MATCH, USER_AGENT};
+use reqwest::header::{ACCEPT, AUTHORIZATION, CACHE_CONTROL, ETAG, IF_NONE_MATCH, USER_AGENT};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -771,6 +771,7 @@ pub async fn fetch_remote_file_with_etag(
         .get(contents_url(cfg))
         .header(USER_AGENT, "LocalPlanner-Desktop-App")
         .header(ACCEPT, "application/vnd.github+json")
+        .header(CACHE_CONTROL, "no-cache")
         .header(
             AUTHORIZATION,
             format!("Bearer {}", cfg.github_token.trim()),

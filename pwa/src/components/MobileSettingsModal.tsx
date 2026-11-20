@@ -3,9 +3,12 @@ import {
   CheckCircle2,
   Eye,
   EyeOff,
+  HelpCircle,
   Loader2,
   X,
 } from "lucide-react";
+import { MobileColorPicker } from "./MobileColorPicker";
+import { SetupTutorialModal } from "./SetupTutorialModal";
 import { saveAppSettings } from "../db/plannerRepo";
 import {
   checkGithubRemoteFile,
@@ -53,6 +56,8 @@ export const MobileSettingsModal: React.FC<MobileSettingsModalProps> = ({
     msg: string;
   } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [isCustomPickerOpen, setIsCustomPickerOpen] = useState(false);
+  const [isTutorialOpen, setIsTutorialOpen] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [migrationPrompt, setMigrationPrompt] = useState<{
     pendingSettings: AppSettings;
@@ -69,6 +74,7 @@ export const MobileSettingsModal: React.FC<MobileSettingsModalProps> = ({
       setGithubFilePath(initialSettings.github_file_path || "planner-data.json");
       setAccentColor(normalizeHexColor(initialSettings.accent_color));
       setTestResult(null);
+      setIsCustomPickerOpen(false);
       setErrorMsg(null);
       setMigrationPrompt(null);
     }
@@ -257,32 +263,6 @@ export const MobileSettingsModal: React.FC<MobileSettingsModalProps> = ({
 
             {storageMode === "github" && (
               <div className="space-y-2.5 p-2.5 border border-hobo-line bg-hobo-paper">
-                <div>
-                  <label className="block text-[10px] uppercase tracking-wider text-hobo-muted mb-1">
-                    Personal Access Token
-                  </label>
-                  <div className="flex items-center border border-hobo-lineDark bg-white/60">
-                    <input
-                      type={showToken ? "text" : "password"}
-                      value={githubToken}
-                      onChange={(e) => setGithubToken(e.target.value)}
-                      placeholder="github_pat_..."
-                      className="flex-1 px-2 py-1.5 bg-transparent text-hobo-ink outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowToken((p) => !p)}
-                      className="px-2 text-hobo-muted"
-                    >
-                      {showToken ? (
-                        <EyeOff className="w-3.5 h-3.5" />
-                      ) : (
-                        <Eye className="w-3.5 h-3.5" />
-                      )}
-                    </button>
-                  </div>
-                </div>
-
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="block text-[10px] uppercase tracking-wider text-hobo-muted mb-1">
@@ -307,6 +287,32 @@ export const MobileSettingsModal: React.FC<MobileSettingsModalProps> = ({
                       placeholder="planner-backup"
                       className="w-full px-2 py-1.5 border border-hobo-lineDark bg-white/60 text-hobo-ink outline-none"
                     />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] uppercase tracking-wider text-hobo-muted mb-1">
+                    Personal Access Token
+                  </label>
+                  <div className="flex items-center border border-hobo-lineDark bg-white/60">
+                    <input
+                      type={showToken ? "text" : "password"}
+                      value={githubToken}
+                      onChange={(e) => setGithubToken(e.target.value)}
+                      placeholder="github_pat_..."
+                      className="flex-1 px-2 py-1.5 bg-transparent text-hobo-ink outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowToken((p) => !p)}
+                      className="px-2 text-hobo-muted"
+                    >
+                      {showToken ? (
+                        <EyeOff className="w-3.5 h-3.5" />
+                      ) : (
+                        <Eye className="w-3.5 h-3.5" />
+                      )}
+                    </button>
                   </div>
                 </div>
 
@@ -369,17 +375,29 @@ export const MobileSettingsModal: React.FC<MobileSettingsModalProps> = ({
                     }`}
                   />
                 ))}
-                <input
-                  type="color"
+                <button
+                  type="button"
+                  title="Custom color"
+                  onClick={() => setIsCustomPickerOpen((p) => !p)}
+                  style={{ backgroundColor: normalizeHexColor(accentColor) }}
+                  className={`px-2 h-6 border text-[10px] uppercase tracking-wider text-white ${
+                    isCustomPickerOpen
+                      ? "border-hobo-ink ring-1 ring-hobo-ink"
+                      : "border-hobo-lineDark"
+                  }`}
+                >
+                  Custom
+                </button>
+              </div>
+              {isCustomPickerOpen && (
+                <MobileColorPicker
                   value={normalizeHexColor(accentColor)}
-                  onChange={(e) => {
-                    const hex = normalizeHexColor(e.target.value);
+                  onChange={(hex) => {
                     setAccentColor(hex);
                     applyAccentColor(hex);
                   }}
-                  className="w-7 h-7 p-0 border border-hobo-lineDark bg-transparent cursor-pointer"
                 />
-              </div>
+              )}
             </div>
 
             {errorMsg && (
@@ -388,26 +406,42 @@ export const MobileSettingsModal: React.FC<MobileSettingsModalProps> = ({
               </p>
             )}
 
-            <div className="flex justify-end gap-2 pt-2 border-t border-hobo-lineDark">
+            <div className="flex items-center justify-between gap-2 pt-2 border-t border-hobo-lineDark">
               <button
                 type="button"
-                onClick={onClose}
-                className="px-3 py-1.5 border border-hobo-lineDark text-hobo-ink"
+                onClick={() => setIsTutorialOpen(true)}
+                className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider text-hobo-muted hover:text-hobo-red"
               >
-                Cancel
+                <HelpCircle className="w-3.5 h-3.5" />
+                <span>Setup Tutorial</span>
               </button>
-              <button
-                type="submit"
-                disabled={isSaving}
-                className="inline-flex items-center gap-1.5 px-4 py-1.5 bg-hobo-red text-white uppercase tracking-wider"
-              >
-                {isSaving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                Save
-              </button>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="px-3 py-1.5 border border-hobo-lineDark text-hobo-ink"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSaving}
+                  className="inline-flex items-center gap-1.5 px-4 py-1.5 bg-hobo-red text-white uppercase tracking-wider"
+                >
+                  {isSaving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  Save
+                </button>
+              </div>
             </div>
           </form>
         )}
       </div>
+
+      <SetupTutorialModal
+        isOpen={isTutorialOpen}
+        onClose={() => setIsTutorialOpen(false)}
+      />
     </div>
   );
 };

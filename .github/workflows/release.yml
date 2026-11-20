@@ -1,4 +1,4 @@
-name: Release Local Planner
+name: Release Hobo weekly
 
 on:
   push:
@@ -49,8 +49,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
-          releaseName: "Local Planner v__VERSION__"
-          releaseBody: "Download and run the installer, or update directly from inside Local Planner."
+          releaseName: "Hobo weekly v__VERSION__"
+          releaseBody: "Download and run the installer, or update directly from inside Hobo weekly."
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

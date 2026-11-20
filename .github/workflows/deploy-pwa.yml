@@ -5,6 +5,7 @@ on:
     branches: ["main"]
     paths:
       - "pwa/**"
+      - "shared/**"
       - ".github/workflows/deploy-pwa.yml"
   workflow_dispatch:
 

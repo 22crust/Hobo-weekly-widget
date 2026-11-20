@@ -86,9 +86,11 @@ export const MobileNotesTab: React.FC = () => {
     }
     const created = await insertNotePageAfter(currentPage.id);
     const updated = await getAllNotePages();
-    setPages(updated);
     const newIdx = updated.findIndex((p) => p.id === created.id);
-    setCurrentPageIdx(newIdx >= 0 ? newIdx : currentPageIdx + 1);
+    const targetIdx = newIdx >= 0 ? newIdx : Math.min(updated.length - 1, currentPageIdx + 1);
+    setPages(updated);
+    setCurrentPageIdx(targetIdx);
+    setDraftContent("");
   };
 
   const handleDeletePage = async () => {
@@ -98,8 +100,11 @@ export const MobileNotesTab: React.FC = () => {
       saveTimerRef.current = null;
     }
     dirtyPageIdRef.current = null;
+    const prevIdx = Math.max(0, currentPageIdx - 1);
     await deleteNotePage(currentPage.id);
-    await loadPages();
+    const updated = await getAllNotePages();
+    setPages(updated);
+    setCurrentPageIdx(Math.min(prevIdx, Math.max(0, updated.length - 1)));
   };
 
   return (

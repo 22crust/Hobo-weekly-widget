@@ -8,10 +8,10 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: "autoUpdate",
-      includeAssets: ["icon.svg"],
+      includeAssets: ["icon.png", "icon-256.png"],
       manifest: {
-        name: "Local Planner",
-        short_name: "Planner",
+        name: "Hobo weekly",
+        short_name: "Hobo weekly",
         description: "Hobonichi-inspired offline-first planner synced with GitHub",
         theme_color: "#F7F4EB",
         background_color: "#F7F4EB",
@@ -19,9 +19,14 @@ export default defineConfig({
         orientation: "portrait",
         icons: [
           {
-            src: "icon.svg",
-            sizes: "any",
-            type: "image/svg+xml",
+            src: "icon-256.png",
+            sizes: "256x256",
+            type: "image/png",
+          },
+          {
+            src: "icon.png",
+            sizes: "512x512",
+            type: "image/png",
             purpose: "any maskable",
           },
         ],

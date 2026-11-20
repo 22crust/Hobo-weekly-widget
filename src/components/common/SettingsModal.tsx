@@ -6,11 +6,13 @@ import {
   Download,
   Eye,
   EyeOff,
+  HelpCircle,
   Loader2,
   Plus,
   RefreshCw,
   X,
 } from "lucide-react";
+import { SetupTutorialModal } from "./SetupTutorialModal";
 import {
   ACCENT_COLOR_PRESETS,
   DEFAULT_ACCENT_HEX,
@@ -64,6 +66,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onInstallUpdate,
 }) => {
   const [initialMode, setInitialMode] = useState<StorageMode>("local");
+  const [isTutorialOpen, setIsTutorialOpen] = useState(false);
   const [storageMode, setStorageMode] = useState<StorageMode>("local");
   const [calendarEntries, setCalendarEntries] = useState<string[]>([""]);
   const [visibleCalendarIdx, setVisibleCalendarIdx] = useState<
@@ -84,6 +87,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [showToken, setShowToken] = useState(false);
 
   const [isTesting, setIsTesting] = useState(false);
+  const [isCheckingConnection, setIsCheckingConnection] = useState(false);
+  const [githubTestResult, setGithubTestResult] = useState<{
+    ok: boolean;
+    msg: string;
+  } | null>(null);
   const [isCleaningDeleted, setIsCleaningDeleted] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{
     type: "success" | "error";
@@ -191,7 +199,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
-  const handleTestAndSaveGithub = async () => {
+  const handleTestGithubConnectionOnly = async () => {
+    setIsCheckingConnection(true);
+    setGithubTestResult(null);
+    setStatusMessage(null);
+    try {
+      const msg = await testGithubConnection(buildDraftSettings());
+      setGithubTestResult({ ok: true, msg });
+    } catch (err) {
+      setGithubTestResult({
+        ok: false,
+        msg: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setIsCheckingConnection(false);
+    }
+  };
+
+  const handleSaveGithubMode = async () => {
     setIsTesting(true);
     setIsSyncingFeeds(true);
     setStatusMessage(null);
@@ -667,6 +692,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   className="w-full bg-white/60 border border-hobo-lineDark px-2 py-1 text-[11px] text-hobo-ink placeholder:text-hobo-faint outline-none focus:border-hobo-red font-light"
                 />
               </div>
+
+              <div className="flex items-center justify-between gap-2 pt-1">
+                <button
+                  type="button"
+                  disabled={isCheckingConnection || isTesting}
+                  onClick={handleTestGithubConnectionOnly}
+                  className="px-2.5 py-1 text-[10px] uppercase tracking-[0.1em] border border-hobo-lineDark text-hobo-ink hover:border-hobo-red hover:text-hobo-red bg-transparent transition-colors inline-flex items-center gap-1.5 shrink-0"
+                >
+                  {isCheckingConnection && (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  )}
+                  <span>
+                    {isCheckingConnection ? "Testing..." : "Test Connection"}
+                  </span>
+                </button>
+                {githubTestResult && (
+                  <span
+                    className={`text-[10px] flex items-center gap-1 ${
+                      githubTestResult.ok ? "text-emerald-700" : "text-hobo-red"
+                    }`}
+                  >
+                    {githubTestResult.ok && (
+                      <Check className="w-3 h-3 stroke-[1.75] shrink-0" />
+                    )}
+                    <span>{githubTestResult.msg}</span>
+                  </span>
+                )}
+              </div>
             </div>
           )}
 
@@ -750,38 +803,54 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         </div>
 
         {/* Modal Footer */}
-        <div className="px-4 py-2.5 border-t border-hobo-lineDark flex items-center justify-end gap-2">
+        <div className="px-4 py-2.5 border-t border-hobo-lineDark flex items-center justify-between gap-2">
           <button
             type="button"
-            onClick={onClose}
-            className="px-3 py-1 text-[10px] uppercase tracking-[0.12em] text-hobo-muted hover:text-hobo-ink bg-transparent border border-hobo-lineDark transition-colors"
+            onClick={() => setIsTutorialOpen(true)}
+            className="inline-flex items-center gap-1 text-[10px] uppercase tracking-[0.1em] text-hobo-muted hover:text-hobo-red bg-transparent border-0 p-0 transition-colors"
           >
-            Close
+            <HelpCircle className="w-3.5 h-3.5 stroke-[1.5]" />
+            <span>Setup Tutorial</span>
           </button>
 
-          {storageMode === "github" ? (
+          <div className="flex items-center gap-2">
             <button
               type="button"
-              disabled={isTesting}
-              onClick={handleTestAndSaveGithub}
-              className="px-3 py-1 text-[10px] uppercase tracking-[0.12em] bg-hobo-red text-white hover:opacity-90 transition-opacity border border-hobo-red inline-flex items-center gap-1.5"
+              onClick={onClose}
+              className="px-3 py-1 text-[10px] uppercase tracking-[0.12em] text-hobo-muted hover:text-hobo-ink bg-transparent border border-hobo-lineDark transition-colors"
             >
-              {isTesting && <Loader2 className="w-3 h-3 animate-spin" />}
-              <span>Test &amp; Save Connection</span>
+              Close
             </button>
-          ) : (
-            <button
-              type="button"
-              disabled={isTesting}
-              onClick={handleSaveLocalMode}
-              className="px-3 py-1 text-[10px] uppercase tracking-[0.12em] bg-hobo-ink text-white hover:bg-hobo-red transition-colors border border-hobo-ink inline-flex items-center gap-1.5"
-            >
-              {isTesting && <Loader2 className="w-3 h-3 animate-spin" />}
-              <span>Save Settings</span>
-            </button>
-          )}
+
+            {storageMode === "github" ? (
+              <button
+                type="button"
+                disabled={isTesting}
+                onClick={handleSaveGithubMode}
+                className="px-3 py-1 text-[10px] uppercase tracking-[0.12em] bg-hobo-red text-white hover:opacity-90 transition-opacity border border-hobo-red inline-flex items-center gap-1.5"
+              >
+                {isTesting && <Loader2 className="w-3 h-3 animate-spin" />}
+                <span>Save</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={isTesting}
+                onClick={handleSaveLocalMode}
+                className="px-3 py-1 text-[10px] uppercase tracking-[0.12em] bg-hobo-ink text-white hover:bg-hobo-red transition-colors border border-hobo-ink inline-flex items-center gap-1.5"
+              >
+                {isTesting && <Loader2 className="w-3 h-3 animate-spin" />}
+                <span>Save</span>
+              </button>
+            )}
+          </div>
         </div>
       </div>
+
+      <SetupTutorialModal
+        isOpen={isTutorialOpen}
+        onClose={() => setIsTutorialOpen(false)}
+      />
     </div>
   );
 };
