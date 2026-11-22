@@ -1,140 +1,162 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { Plus } from "lucide-react";
+import {
+  BucketDefinition,
+  BucketLayoutSnapshot,
+  BucketScope,
+  getDefaultBucketDefinitions,
+  resolveWeekLayout,
+} from "../../../shared/buckets";
 import { LocalTask } from "../types/planner";
 import { MobileTaskItem } from "./MobileTaskItem";
 
 interface MobileTasksSectionProps {
+  weekStartDate: string;
   weeklyTasks: LocalTask[];
   longTermTasks: LocalTask[];
-  onAddWeeklyTask: (title: string) => void;
-  onAddLongTermTask: (title: string) => void;
+  bucketDefinitions: BucketDefinition[];
+  bucketLayouts: BucketLayoutSnapshot[];
+  onAddTaskInBucket: (bucketId: string, scope: BucketScope, title: string) => void;
   onToggleTask: (task: LocalTask) => void;
   onEditTaskTitle: (syncId: string, title: string) => void;
   onDeleteTask: (syncId: string) => void;
   onMigrateWeeklyToPrevWeek: (syncId: string) => void;
   onMigrateWeeklyToNextWeek: (syncId: string) => void;
-  onClearCompletedWeekly: () => void;
-  onClearCompletedLongTerm: () => void;
+  onClearCompletedInBucket: (bucketId: string, scope: BucketScope) => void;
 }
 
 export const MobileTasksSection: React.FC<MobileTasksSectionProps> = ({
+  weekStartDate,
   weeklyTasks,
   longTermTasks,
-  onAddWeeklyTask,
-  onAddLongTermTask,
+  bucketDefinitions,
+  bucketLayouts,
+  onAddTaskInBucket,
   onToggleTask,
   onEditTaskTitle,
   onDeleteTask,
   onMigrateWeeklyToPrevWeek,
   onMigrateWeeklyToNextWeek,
-  onClearCompletedWeekly,
-  onClearCompletedLongTerm,
+  onClearCompletedInBucket,
 }) => {
-  const [weeklyDraft, setWeeklyDraft] = useState("");
-  const [longTermDraft, setLongTermDraft] = useState("");
+  const [draftsByBucket, setDraftsByBucket] = useState<Record<string, string>>(
+    {}
+  );
 
-  const hasCompletedWeekly = weeklyTasks.some((t) => t.is_completed);
-  const hasCompletedLongTerm = longTermTasks.some((t) => t.is_completed);
+  const activeDefs = useMemo(
+    () =>
+      bucketDefinitions.length > 0
+        ? bucketDefinitions
+        : getDefaultBucketDefinitions(),
+    [bucketDefinitions]
+  );
+
+  const defById = useMemo(
+    () => new Map(activeDefs.map((d) => [d.id, d])),
+    [activeDefs]
+  );
+
+  const resolvedLayout = useMemo(
+    () => resolveWeekLayout(weekStartDate, bucketLayouts, activeDefs),
+    [weekStartDate, bucketLayouts, activeDefs]
+  );
+
+  const visibleEntries = useMemo(
+    () => resolvedLayout.filter((e) => e.visible && defById.has(e.bucket_id)),
+    [resolvedLayout, defById]
+  );
+
+  const allSidebarTasks = useMemo(
+    () => [...weeklyTasks, ...longTermTasks],
+    [weeklyTasks, longTermTasks]
+  );
+
+  if (visibleEntries.length === 0) {
+    return null;
+  }
 
   return (
     <section className="px-3.5 py-3 space-y-4">
-      {/* Weekly Tasks — auto-sized height & drop zone */}
-      <div data-task-drop-zone="weekly-sidebar" className="py-1 -mx-1 px-1">
-        <div className="pb-0.5 flex items-center justify-between">
-          <h3 className="text-[11px] uppercase tracking-[0.14em] text-hobo-ink font-medium">
-            Weekly Tasks
-          </h3>
-          {hasCompletedWeekly && (
-            <button
-              type="button"
-              onClick={onClearCompletedWeekly}
-              className="text-[10px] uppercase tracking-wider text-hobo-muted hover:text-hobo-red"
-            >
-              Clear Completed
-            </button>
-          )}
-        </div>
+      {visibleEntries.map((entry) => {
+        const def = defById.get(entry.bucket_id);
+        if (!def) return null;
 
-        <div className="pt-0.5 space-y-0">
-          {weeklyTasks.map((task) => (
-            <MobileTaskItem
-              key={task.sync_id}
-              task={task}
-              onToggle={onToggleTask}
-              onEditTitle={onEditTaskTitle}
-              onDelete={onDeleteTask}
-              onMigrateToPrevWeek={onMigrateWeeklyToPrevWeek}
-              onMigrateToNextWeek={onMigrateWeeklyToNextWeek}
-            />
-          ))}
+        const bucketTasks = allSidebarTasks.filter((t) => {
+          const tBucket =
+            t.bucket_id || (t.is_long_term ? "long_term" : "weekly");
+          return tBucket === def.id;
+        });
+        const hasCompleted = bucketTasks.some((t) => t.is_completed);
+        const draft = draftsByBucket[def.id] ?? "";
 
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (!weeklyDraft.trim()) return;
-              onAddWeeklyTask(weeklyDraft.trim());
-              setWeeklyDraft("");
-            }}
-            className="flex items-center gap-1.5 pt-0.5"
+        return (
+          <div
+            key={def.id}
+            data-task-drop-zone={`bucket:${def.id}`}
+            className="py-1 -mx-1 px-1"
           >
-            <Plus className="w-3.5 h-3.5 text-hobo-faint shrink-0" />
-            <input
-              type="text"
-              value={weeklyDraft}
-              onChange={(e) => setWeeklyDraft(e.target.value)}
-              className="w-full text-[12.5px] bg-transparent text-hobo-ink outline-none py-0.5"
-            />
-          </form>
-        </div>
-      </div>
+            <div className="pb-0.5 flex items-center justify-between">
+              <h3 className="text-[11px] uppercase tracking-[0.14em] text-hobo-ink font-medium">
+                {def.title}
+              </h3>
+              {hasCompleted && (
+                <button
+                  type="button"
+                  onClick={() => onClearCompletedInBucket(def.id, def.scope)}
+                  className="text-[10px] uppercase tracking-wider text-hobo-muted hover:text-hobo-red"
+                >
+                  Clear Completed
+                </button>
+              )}
+            </div>
 
-      {/* Long-Term Tasks — auto-sized height & drop zone */}
-      <div data-task-drop-zone="long-term" className="py-1 -mx-1 px-1">
-        <div className="pb-0.5 flex items-center justify-between">
-          <h3 className="text-[11px] uppercase tracking-[0.14em] text-hobo-ink font-medium">
-            Long-Term Tasks
-          </h3>
-          {hasCompletedLongTerm && (
-            <button
-              type="button"
-              onClick={onClearCompletedLongTerm}
-              className="text-[10px] uppercase tracking-wider text-hobo-muted hover:text-hobo-red"
-            >
-              Clear Completed
-            </button>
-          )}
-        </div>
+            <div className="pt-0.5 space-y-0">
+              {bucketTasks.map((task) => (
+                <MobileTaskItem
+                  key={task.sync_id}
+                  task={task}
+                  onToggle={onToggleTask}
+                  onEditTitle={onEditTaskTitle}
+                  onDelete={onDeleteTask}
+                  onMigrateToPrevWeek={
+                    def.scope === "weekly"
+                      ? onMigrateWeeklyToPrevWeek
+                      : undefined
+                  }
+                  onMigrateToNextWeek={
+                    def.scope === "weekly"
+                      ? onMigrateWeeklyToNextWeek
+                      : undefined
+                  }
+                />
+              ))}
 
-        <div className="pt-0.5 space-y-0">
-          {longTermTasks.map((task) => (
-            <MobileTaskItem
-              key={task.sync_id}
-              task={task}
-              onToggle={onToggleTask}
-              onEditTitle={onEditTaskTitle}
-              onDelete={onDeleteTask}
-            />
-          ))}
-
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (!longTermDraft.trim()) return;
-              onAddLongTermTask(longTermDraft.trim());
-              setLongTermDraft("");
-            }}
-            className="flex items-center gap-1.5 pt-0.5"
-          >
-            <Plus className="w-3.5 h-3.5 text-hobo-faint shrink-0" />
-            <input
-              type="text"
-              value={longTermDraft}
-              onChange={(e) => setLongTermDraft(e.target.value)}
-              className="w-full text-[12.5px] bg-transparent text-hobo-ink outline-none py-0.5"
-            />
-          </form>
-        </div>
-      </div>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!draft.trim()) return;
+                  onAddTaskInBucket(def.id, def.scope, draft.trim());
+                  setDraftsByBucket((prev) => ({ ...prev, [def.id]: "" }));
+                }}
+                className="flex items-center gap-1.5 pt-0.5"
+              >
+                <Plus className="w-3.5 h-3.5 text-hobo-faint shrink-0" />
+                <input
+                  type="text"
+                  value={draft}
+                  onChange={(e) =>
+                    setDraftsByBucket((prev) => ({
+                      ...prev,
+                      [def.id]: e.target.value,
+                    }))
+                  }
+                  className="w-full text-[12.5px] bg-transparent text-hobo-ink outline-none py-0.5"
+                />
+              </form>
+            </div>
+          </div>
+        );
+      })}
     </section>
   );
 };

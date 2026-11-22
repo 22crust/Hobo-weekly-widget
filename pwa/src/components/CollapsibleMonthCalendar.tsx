@@ -122,7 +122,7 @@ export const CollapsibleMonthCalendar: React.FC<
                 onClick={() => onSelectDate(dateStr)}
                 className={`relative h-10 border-r border-b border-hobo-lineDark flex items-center justify-center transition-colors ${
                   today ? "bg-hobo-redSoft" : "hover:bg-hobo-paperHover"
-                } ${selected ? "ring-1 ring-inset ring-hobo-muted" : ""}`}
+                } ${selected ? "ring-1 ring-inset ring-hobo-ink" : ""}`}
               >
                 <span
                   className={`text-xs leading-none ${

@@ -3,8 +3,15 @@ import { getDatabase, notifyDatabaseUpdated } from "./database";
 import { getAllWeekImages } from "./weekImagesRepo";
 import { getAllLocalEventsForBackup } from "./localEventsRepo";
 import { getAllNotePagesForBackup } from "./notePagesRepo";
+import {
+  getAllBucketDefinitionsForBackup,
+  getAllBucketLayouts,
+} from "./bucketsRepo";
 import { generateUuid } from "../utils/id";
 import {
+  BucketDefinition,
+  BucketLayoutSnapshot,
+  BucketScope,
   CreateLocalTaskInput,
   LocalEvent,
   LocalTask,
@@ -21,6 +28,7 @@ interface RawLocalTaskRow {
   assigned_date: string | null;
   assigned_week_start: string | null;
   is_long_term: number;
+  bucket_id?: string | null;
   start_time: string | null;
   end_time: string | null;
   is_completed: number;
@@ -33,10 +41,17 @@ interface RawLocalTaskRow {
 }
 
 function mapRowToLocalTask(row: RawLocalTaskRow): LocalTask {
+  const isLongTerm = Boolean(row.is_long_term);
   return {
     ...row,
     sync_id: row.sync_id || String(row.id),
-    is_long_term: Boolean(row.is_long_term),
+    is_long_term: isLongTerm,
+    bucket_id:
+      row.bucket_id && row.bucket_id.trim() !== ""
+        ? row.bucket_id.trim()
+        : isLongTerm
+        ? "long_term"
+        : "weekly",
     is_completed: Boolean(row.is_completed),
     show_in_weekly: Boolean(row.show_in_weekly),
     show_in_sidebar: Boolean(row.show_in_sidebar),
@@ -45,31 +60,12 @@ function mapRowToLocalTask(row: RawLocalTaskRow): LocalTask {
   };
 }
 
-/**
- * Returns whichever timestamp (`updated_at` vs. `deleted_at`) is newest for a task or sticker.
- */
-export function getEffectiveTimestamp(item: {
-  updated_at?: string | null;
-  deleted_at?: string | null;
-  created_at?: string | null;
-}): string {
-  const u = item.updated_at || item.created_at || "1970-01-01T00:00:00.000Z";
-  const d = item.deleted_at || "";
-  return d > u ? d : u;
-}
+import {
+  getEffectiveTimestamp,
+  resolveSoftDeleteWinner,
+} from "../../shared/plannerCore";
 
-/**
- * Normalizes a task record so that if `updated_at > deleted_at`, `deleted_at` is cleared (`null`),
- * and if `deleted_at >= updated_at`, `deleted_at` wins and the item remains soft-deleted.
- */
-export function resolveSoftDeleteWinner<
-  T extends { updated_at: string; deleted_at: string | null }
->(item: T): T {
-  if (item.deleted_at && item.updated_at > item.deleted_at) {
-    return { ...item, deleted_at: null };
-  }
-  return item;
-}
+export { getEffectiveTimestamp, resolveSoftDeleteWinner };
 
 /**
  * Computes Monday YYYY-MM-DD for a given YYYY-MM-DD date string.
@@ -116,6 +112,32 @@ export async function getLocalTasksInRange(
        ${visibilityClause}
      ORDER BY assigned_date ASC, is_completed ASC, sort_order ASC, start_time ASC, id ASC`,
     [startDate, endDate]
+  );
+  return rows.map(mapRowToLocalTask);
+}
+
+/**
+ * Fetches all active sidebar tasks for a specific week (`weekStartDate`..`weekEndDate`)
+ * in a single SQLite query, including both persistent (`is_long_term = 1`) and
+ * week-scoped (`is_long_term = 0`) tasks.
+ */
+export async function getSidebarTasksForWeek(
+  weekStartDate: string,
+  weekEndDate: string
+): Promise<LocalTask[]> {
+  const db = await getDatabase();
+  const rows = await db.select<RawLocalTaskRow[]>(
+    `SELECT *
+     FROM local_tasks
+     WHERE show_in_sidebar = 1
+       AND (deleted_at IS NULL OR updated_at > deleted_at)
+       AND (
+         is_long_term = 1
+         OR assigned_week_start = $1
+         OR (assigned_date >= $1 AND assigned_date <= $2)
+       )
+     ORDER BY is_completed ASC, sort_order ASC, created_at ASC, id ASC`,
+    [weekStartDate, weekEndDate]
   );
   return rows.map(mapRowToLocalTask);
 }
@@ -185,12 +207,18 @@ export async function createLocalTask(
       : null;
 
   const syncId = generateUuid();
+  const bucketId =
+    input.bucket_id && input.bucket_id.trim() !== ""
+      ? input.bucket_id.trim()
+      : input.is_long_term
+      ? "long_term"
+      : "weekly";
   const result = await db.execute(
     `INSERT INTO local_tasks (
-      sync_id, title, notes, assigned_date, assigned_week_start, is_long_term,
+      sync_id, title, notes, assigned_date, assigned_week_start, is_long_term, bucket_id,
       start_time, end_time, is_completed, show_in_weekly, show_in_sidebar,
       sort_order, created_at, updated_at, deleted_at
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, $9, $10, $11, $12, $13, NULL)`,
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, $10, $11, $12, $13, $14, NULL)`,
     [
       syncId,
       input.title.trim(),
@@ -198,6 +226,7 @@ export async function createLocalTask(
       assignedDate,
       assignedWeekStart,
       input.is_long_term ? 1 : 0,
+      bucketId,
       input.start_time ?? null,
       input.end_time ?? null,
       input.show_in_weekly ? 1 : 0,
@@ -245,6 +274,14 @@ export async function updateLocalTask(
         ? 1
         : 0
       : current.is_long_term;
+  const nextBucketId =
+    updates.bucket_id !== undefined && updates.bucket_id.trim() !== ""
+      ? updates.bucket_id.trim()
+      : current.bucket_id && current.bucket_id.trim() !== ""
+      ? current.bucket_id.trim()
+      : nextIsLongTerm
+      ? "long_term"
+      : "weekly";
   const nextStartTime =
     updates.start_time !== undefined ? updates.start_time : current.start_time;
   const nextEndTime =
@@ -277,21 +314,23 @@ export async function updateLocalTask(
          assigned_date = $3,
          assigned_week_start = $4,
          is_long_term = $5,
-         start_time = $6,
-         end_time = $7,
-         is_completed = $8,
-         show_in_weekly = $9,
-         show_in_sidebar = $10,
-         sort_order = $11,
-         updated_at = $12,
+         bucket_id = $6,
+         start_time = $7,
+         end_time = $8,
+         is_completed = $9,
+         show_in_weekly = $10,
+         show_in_sidebar = $11,
+         sort_order = $12,
+         updated_at = $13,
          deleted_at = NULL
-     WHERE id = $13`,
+     WHERE id = $14`,
     [
       nextTitle,
       nextNotes,
       nextAssignedDate,
       nextAssignedWeekStart,
       nextIsLongTerm,
+      nextBucketId,
       nextStartTime,
       nextEndTime,
       nextCompleted,
@@ -342,19 +381,97 @@ export async function moveLocalTaskToSidebar(
   options: {
     weekStartDate: string | null;
     isLongTerm: boolean;
+    bucketId?: string;
     keepInDayColumn?: boolean;
   }
 ): Promise<void> {
+  const bucketId =
+    options.bucketId && options.bucketId.trim() !== ""
+      ? options.bucketId.trim()
+      : options.isLongTerm
+      ? "long_term"
+      : "weekly";
   const updates: UpdateLocalTaskInput = {
-    assigned_week_start: options.isLongTerm ? null : options.weekStartDate,
     is_long_term: options.isLongTerm,
+    bucket_id: bucketId,
     show_in_sidebar: true,
   };
+  if (!options.isLongTerm && options.weekStartDate) {
+    updates.assigned_week_start = options.weekStartDate;
+  }
   if (!options.keepInDayColumn) {
     updates.show_in_weekly = false;
     updates.assigned_date = null;
   }
   await updateLocalTask(id, updates);
+}
+
+export async function clearCompletedTasksForBucket(
+  bucketId: string,
+  scope: BucketScope,
+  weekStartDate: string,
+  weekEndDate: string
+): Promise<void> {
+  const db = await getDatabase();
+  const nowIso = new Date().toISOString();
+
+  if (scope === "persistent") {
+    await db.execute(
+      `UPDATE local_tasks
+       SET show_in_sidebar = 0,
+           updated_at = $1
+       WHERE is_completed = 1
+         AND show_in_sidebar = 1
+         AND show_in_weekly = 1
+         AND COALESCE(bucket_id, CASE WHEN is_long_term = 1 THEN 'long_term' ELSE 'weekly' END) = $2
+         AND (deleted_at IS NULL OR updated_at > deleted_at)`,
+      [nowIso, bucketId]
+    );
+    await db.execute(
+      `UPDATE local_tasks
+       SET deleted_at = $1,
+           updated_at = $1
+       WHERE is_completed = 1
+         AND show_in_sidebar = 1
+         AND show_in_weekly = 0
+         AND COALESCE(bucket_id, CASE WHEN is_long_term = 1 THEN 'long_term' ELSE 'weekly' END) = $2
+         AND (deleted_at IS NULL OR updated_at > deleted_at)`,
+      [nowIso, bucketId]
+    );
+  } else {
+    await db.execute(
+      `UPDATE local_tasks
+       SET show_in_sidebar = 0,
+           updated_at = $3
+       WHERE is_completed = 1
+         AND show_in_sidebar = 1
+         AND show_in_weekly = 1
+         AND COALESCE(bucket_id, CASE WHEN is_long_term = 1 THEN 'long_term' ELSE 'weekly' END) = $4
+         AND (deleted_at IS NULL OR updated_at > deleted_at)
+         AND (
+           assigned_week_start = $1
+           OR (assigned_date >= $1 AND assigned_date <= $2)
+         )`,
+      [weekStartDate, weekEndDate, nowIso, bucketId]
+    );
+    await db.execute(
+      `UPDATE local_tasks
+       SET deleted_at = $3,
+           updated_at = $3
+       WHERE is_completed = 1
+         AND show_in_sidebar = 1
+         AND show_in_weekly = 0
+         AND COALESCE(bucket_id, CASE WHEN is_long_term = 1 THEN 'long_term' ELSE 'weekly' END) = $4
+         AND (deleted_at IS NULL OR updated_at > deleted_at)
+         AND (
+           assigned_week_start = $1
+           OR (assigned_date >= $1 AND assigned_date <= $2)
+         )`,
+      [weekStartDate, weekEndDate, nowIso, bucketId]
+    );
+  }
+
+  await notifyDatabaseUpdated("local_tasks:clear_completed_bucket");
 }
 
 /**
@@ -571,7 +688,9 @@ export async function upsertRemoteBackupIntoLocal(
   remoteTasks: LocalTask[],
   remoteImages: WeekImage[],
   remoteLocalEvents: LocalEvent[] = [],
-  remoteNotePages: NotePage[] = []
+  remoteNotePages: NotePage[] = [],
+  remoteBucketDefs: BucketDefinition[] = [],
+  remoteBucketLayouts: BucketLayoutSnapshot[] = []
 ): Promise<number> {
   const db = await getDatabase();
   const localTasks = await getAllLocalTasks();
@@ -600,12 +719,18 @@ export async function upsertRemoteBackupIntoLocal(
 
     if (!existing) {
       const resolvedSyncId = remoteSyncId || generateUuid();
+      const resolvedBucketId =
+        rt.bucket_id && rt.bucket_id.trim() !== ""
+          ? rt.bucket_id.trim()
+          : rt.is_long_term
+          ? "long_term"
+          : "weekly";
       await db.execute(
         `INSERT INTO local_tasks (
-          sync_id, title, notes, assigned_date, assigned_week_start, is_long_term,
+          sync_id, title, notes, assigned_date, assigned_week_start, is_long_term, bucket_id,
           start_time, end_time, is_completed, show_in_weekly, show_in_sidebar,
           sort_order, created_at, updated_at, deleted_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
         [
           resolvedSyncId,
           rt.title,
@@ -613,6 +738,7 @@ export async function upsertRemoteBackupIntoLocal(
           rt.assigned_date,
           rt.assigned_week_start,
           rt.is_long_term ? 1 : 0,
+          resolvedBucketId,
           rt.start_time,
           rt.end_time,
           rt.is_completed ? 1 : 0,
@@ -636,6 +762,14 @@ export async function upsertRemoteBackupIntoLocal(
       const winningDeleted =
         candDeleted && candDeleted >= newestUpdated ? candDeleted : null;
       const resolvedSyncId = remoteSyncId || existing.sync_id || generateUuid();
+      const resolvedBucketId =
+        rt.bucket_id && rt.bucket_id.trim() !== ""
+          ? rt.bucket_id.trim()
+          : existing.bucket_id && existing.bucket_id.trim() !== ""
+          ? existing.bucket_id.trim()
+          : rt.is_long_term
+          ? "long_term"
+          : "weekly";
 
       await db.execute(
         `UPDATE local_tasks
@@ -645,16 +779,17 @@ export async function upsertRemoteBackupIntoLocal(
              assigned_date = $4,
              assigned_week_start = $5,
              is_long_term = $6,
-             start_time = $7,
-             end_time = $8,
-             is_completed = $9,
-             show_in_weekly = $10,
-             show_in_sidebar = $11,
-             sort_order = $12,
-             created_at = $13,
-             updated_at = $14,
-             deleted_at = $15
-         WHERE id = $16`,
+             bucket_id = $7,
+             start_time = $8,
+             end_time = $9,
+             is_completed = $10,
+             show_in_weekly = $11,
+             show_in_sidebar = $12,
+             sort_order = $13,
+             created_at = $14,
+             updated_at = $15,
+             deleted_at = $16
+         WHERE id = $17`,
         [
           resolvedSyncId,
           rt.title,
@@ -662,6 +797,7 @@ export async function upsertRemoteBackupIntoLocal(
           rt.assigned_date,
           rt.assigned_week_start,
           rt.is_long_term ? 1 : 0,
+          resolvedBucketId,
           rt.start_time,
           rt.end_time,
           rt.is_completed ? 1 : 0,
@@ -923,6 +1059,86 @@ export async function upsertRemoteBackupIntoLocal(
     }
   }
 
+  const localBucketDefs = await getAllBucketDefinitionsForBackup();
+  const localBucketDefMap = new Map<string, BucketDefinition>();
+  for (const bd of localBucketDefs) {
+    localBucketDefMap.set(bd.id, bd);
+  }
+
+  for (const rawBd of remoteBucketDefs) {
+    if (!rawBd.id) continue;
+    const bd = resolveSoftDeleteWinner({
+      ...rawBd,
+      scope: rawBd.scope === "persistent" ? ("persistent" as const) : ("weekly" as const),
+      created_at: rawBd.created_at || rawBd.updated_at || "1970-01-01T00:00:00.000Z",
+      updated_at: rawBd.updated_at || rawBd.created_at || "1970-01-01T00:00:00.000Z",
+      deleted_at: rawBd.deleted_at ?? null,
+    });
+    const existingBd = localBucketDefMap.get(bd.id);
+    const remoteEff = getEffectiveTimestamp(bd);
+    const localEff = existingBd ? getEffectiveTimestamp(existingBd) : "";
+
+    if (!existingBd) {
+      await db.execute(
+        `INSERT INTO bucket_definitions (id, title, scope, created_at, updated_at, deleted_at)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [bd.id, bd.title, bd.scope, bd.created_at, bd.updated_at, bd.deleted_at ?? null]
+      );
+      upsertedCount++;
+    } else if (remoteEff > localEff) {
+      const newestUpdated =
+        bd.updated_at > existingBd.updated_at ? bd.updated_at : existingBd.updated_at;
+      const candDeleted =
+        (bd.deleted_at || "") > (existingBd.deleted_at || "")
+          ? bd.deleted_at
+          : existingBd.deleted_at;
+      const winningDeleted =
+        candDeleted && candDeleted >= newestUpdated ? candDeleted : null;
+
+      await db.execute(
+        `UPDATE bucket_definitions
+         SET title = $1,
+             scope = $2,
+             updated_at = $3,
+             deleted_at = $4
+         WHERE id = $5`,
+        [bd.title, bd.scope, newestUpdated, winningDeleted, bd.id]
+      );
+      upsertedCount++;
+    }
+  }
+
+  const localBucketLayouts = await getAllBucketLayouts();
+  const localLayoutMap = new Map<string, BucketLayoutSnapshot>();
+  for (const bl of localBucketLayouts) {
+    localLayoutMap.set(bl.effective_from_week, bl);
+  }
+
+  for (const rawBl of remoteBucketLayouts) {
+    if (!rawBl.effective_from_week) continue;
+    const existingBl = localLayoutMap.get(rawBl.effective_from_week);
+    const remoteUpdated = rawBl.updated_at || "1970-01-01T00:00:00.000Z";
+    const localUpdated = existingBl?.updated_at || "";
+
+    if (!existingBl || remoteUpdated > localUpdated) {
+      await db.execute(
+        `INSERT INTO bucket_layouts (effective_from_week, buckets_json, is_explicit_override, updated_at)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT(effective_from_week) DO UPDATE SET
+           buckets_json = excluded.buckets_json,
+           is_explicit_override = excluded.is_explicit_override,
+           updated_at = excluded.updated_at`,
+        [
+          rawBl.effective_from_week,
+          JSON.stringify(Array.isArray(rawBl.buckets) ? rawBl.buckets : []),
+          rawBl.is_explicit_override ? 1 : 0,
+          remoteUpdated,
+        ]
+      );
+      upsertedCount++;
+    }
+  }
+
   if (upsertedCount > 0) {
     await notifyDatabaseUpdated("github_sync:pull_upsert");
   }
@@ -936,13 +1152,17 @@ export async function replaceAllLocalDataWithRemote(
   remoteTasks: LocalTask[],
   remoteImages: WeekImage[],
   remoteLocalEvents: LocalEvent[] = [],
-  remoteNotePages: NotePage[] = []
+  remoteNotePages: NotePage[] = [],
+  remoteBucketDefs: BucketDefinition[] = [],
+  remoteBucketLayouts: BucketLayoutSnapshot[] = []
 ): Promise<void> {
   const db = await getDatabase();
   await db.execute(`DELETE FROM local_tasks`);
   await db.execute(`DELETE FROM week_images WHERE COALESCE(is_local_only, 0) = 0`);
   await db.execute(`DELETE FROM local_events`);
   await db.execute(`DELETE FROM note_pages`);
+  await db.execute(`DELETE FROM bucket_definitions`);
+  await db.execute(`DELETE FROM bucket_layouts`);
 
   for (const rawRt of remoteTasks) {
     const rt = resolveSoftDeleteWinner({
@@ -951,12 +1171,18 @@ export async function replaceAllLocalDataWithRemote(
       deleted_at: rawRt.deleted_at ?? null,
     });
     const resolvedSyncId = rt.sync_id && rt.sync_id.trim() !== "" ? rt.sync_id.trim() : generateUuid();
+    const resolvedBucketId =
+      rt.bucket_id && rt.bucket_id.trim() !== ""
+        ? rt.bucket_id.trim()
+        : rt.is_long_term
+        ? "long_term"
+        : "weekly";
     await db.execute(
       `INSERT INTO local_tasks (
-        sync_id, title, notes, assigned_date, assigned_week_start, is_long_term,
+        sync_id, title, notes, assigned_date, assigned_week_start, is_long_term, bucket_id,
         start_time, end_time, is_completed, show_in_weekly, show_in_sidebar,
         sort_order, created_at, updated_at, deleted_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
       [
         resolvedSyncId,
         rt.title,
@@ -964,6 +1190,7 @@ export async function replaceAllLocalDataWithRemote(
         rt.assigned_date,
         rt.assigned_week_start,
         rt.is_long_term ? 1 : 0,
+        resolvedBucketId,
         rt.start_time,
         rt.end_time,
         rt.is_completed ? 1 : 0,
@@ -1057,6 +1284,39 @@ export async function replaceAllLocalDataWithRemote(
       `INSERT INTO note_pages (id, page_order, content, updated_at, deleted_at)
        VALUES ($1, $2, $3, $4, $5)`,
       [np.id, np.page_order, np.content ?? "", np.updated_at, np.deleted_at ?? null]
+    );
+  }
+
+  for (const rawBd of remoteBucketDefs) {
+    if (!rawBd.id) continue;
+    const bd = resolveSoftDeleteWinner({
+      ...rawBd,
+      scope: rawBd.scope === "persistent" ? ("persistent" as const) : ("weekly" as const),
+      created_at: rawBd.created_at || rawBd.updated_at || new Date().toISOString(),
+      updated_at: rawBd.updated_at || rawBd.created_at || new Date().toISOString(),
+      deleted_at: rawBd.deleted_at ?? null,
+    });
+    await db.execute(
+      `INSERT INTO bucket_definitions (id, title, scope, created_at, updated_at, deleted_at)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [bd.id, bd.title, bd.scope, bd.created_at, bd.updated_at, bd.deleted_at ?? null]
+    );
+  }
+
+  // Ensure built-in weekly/long_term exist if remote payload came from an older version without bucket_definitions
+  await getAllBucketDefinitionsForBackup();
+
+  for (const rawBl of remoteBucketLayouts) {
+    if (!rawBl.effective_from_week) continue;
+    await db.execute(
+      `INSERT INTO bucket_layouts (effective_from_week, buckets_json, is_explicit_override, updated_at)
+       VALUES ($1, $2, $3, $4)`,
+      [
+        rawBl.effective_from_week,
+        JSON.stringify(Array.isArray(rawBl.buckets) ? rawBl.buckets : []),
+        rawBl.is_explicit_override ? 1 : 0,
+        rawBl.updated_at || new Date().toISOString(),
+      ]
     );
   }
 

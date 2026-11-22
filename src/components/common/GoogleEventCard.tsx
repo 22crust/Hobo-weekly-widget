@@ -1,7 +1,12 @@
-import React from "react";
-import { format, parseISO } from "date-fns";
+import React, { useEffect, useState } from "react";
 import { EyeOff, MapPin } from "lucide-react";
 import { GoogleEvent } from "../../types/planner";
+import {
+  formatEventTimeRange,
+  getSavedTimeFormat,
+  subscribeTimeFormat,
+  TimeFormat,
+} from "../../../shared/timeFormat";
 
 interface GoogleEventCardProps {
   event: GoogleEvent;
@@ -10,17 +15,11 @@ interface GoogleEventCardProps {
   compact?: boolean;
 }
 
-export function formatEventTimeLabel(event: GoogleEvent): string {
-  if (event.is_all_day) {
-    return "All Day";
-  }
-  try {
-    const start = parseISO(event.start_time);
-    const end = parseISO(event.end_time);
-    return `${format(start, "HH:mm")} – ${format(end, "HH:mm")}`;
-  } catch {
-    return "";
-  }
+export function formatEventTimeLabel(
+  event: GoogleEvent,
+  timeFormat: TimeFormat = getSavedTimeFormat()
+): string {
+  return formatEventTimeRange(event, timeFormat);
 }
 
 export const GoogleEventCard: React.FC<GoogleEventCardProps> = ({
@@ -29,7 +28,15 @@ export const GoogleEventCard: React.FC<GoogleEventCardProps> = ({
   showLocation = false,
   compact = false,
 }) => {
-  const timeLabel = formatEventTimeLabel(event);
+  const [timeFormat, setTimeFormat] = useState<TimeFormat>(() =>
+    getSavedTimeFormat()
+  );
+
+  useEffect(() => {
+    return subscribeTimeFormat(setTimeFormat);
+  }, []);
+
+  const timeLabel = formatEventTimeLabel(event, timeFormat);
 
   return (
     <div

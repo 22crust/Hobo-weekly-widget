@@ -1,6 +1,22 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { addDays, format, getISOWeek, parseISO } from "date-fns";
-import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
+import { ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
+import {
+  BucketDefinition,
+  BucketLayoutEntry,
+  BucketLayoutSnapshot,
+  BucketScope,
+  equalizeVisibleRatios,
+  findFutureExplicitOverrides,
+  getDefaultBucketDefinitions,
+  MAX_VISIBLE_BUCKETS,
+  MAX_VISIBLE_BUCKETS_MESSAGE,
+  normalizeLayoutEntries,
+  planSetDefaultLayoutFromWeek,
+  planThisWeekLayoutEdit,
+  resolveWeekLayout,
+} from "../../../shared/buckets";
 import {
   CreateWeekImageInput,
   CurrentWeatherSummary,
@@ -11,12 +27,14 @@ import {
   WeekImage,
 } from "../../types/planner";
 import { WeatherIcon } from "../common/WeatherIcon";
+import { formatTemperature, TemperatureUnit } from "../../services/weatherService";
 import {
   getActiveDraggedTaskId,
   setActiveDraggedTaskId,
   TaskItem,
 } from "../common/TaskItem";
 import { DayColumn } from "./DayColumn";
+import { ManageHiddenListsModal } from "./ManageHiddenListsModal";
 import { MiniMonthCalendar } from "./MiniMonthCalendar";
 import { CrispSquareGrid } from "./CrispSquareGrid";
 import { WeeklyImageLayer } from "./WeeklyImageLayer";
@@ -28,9 +46,13 @@ interface WeekBoardProps {
   datedTasks: LocalTask[];
   weeklySidebarTasks: LocalTask[];
   longTermSidebarTasks: LocalTask[];
+  bucketDefinitions?: BucketDefinition[];
+  bucketLayouts?: BucketLayoutSnapshot[];
   weekImages: WeekImage[];
   dailyWeatherByDate: Record<string, DailyWeather>;
   currentWeather: CurrentWeatherSummary | null;
+  temperatureUnit?: TemperatureUnit;
+  onToggleTemperatureUnit?: () => void;
   onPrevWeek: () => void;
   onNextWeek: () => void;
   onResetThisWeek: () => void;
@@ -49,6 +71,14 @@ interface WeekBoardProps {
   onMigrateTaskToNextWeek: (id: number) => void;
   onClearCompletedWeeklySidebar: () => void;
   onClearCompletedLongTermSidebar: () => void;
+  onAddTaskInBucket?: (bucketId: string, scope: BucketScope, title: string) => void;
+  onMoveTaskToBucket?: (taskId: number, bucketId: string, scope: BucketScope) => void;
+  onClearCompletedInBucket?: (bucketId: string, scope: BucketScope) => void;
+  onCreateBucket?: (title: string, scope: BucketScope) => Promise<BucketDefinition>;
+  onRenameBucket?: (bucketId: string, newTitle: string) => Promise<void> | void;
+  onSaveBucketLayouts?: (snapshots: BucketLayoutSnapshot[]) => Promise<void> | void;
+  onCountTasksInBucket?: (bucketId: string) => Promise<number>;
+  onDeleteHiddenBucket?: (bucketId: string) => Promise<void> | void;
   onAddWeekImage: (input: CreateWeekImageInput) => void;
   onUpdateWeekImage: (id: string, updates: UpdateWeekImageInput) => void;
   onDeleteWeekImage: (id: string) => void;
@@ -120,9 +150,13 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
   datedTasks,
   weeklySidebarTasks,
   longTermSidebarTasks,
+  bucketDefinitions = [],
+  bucketLayouts = [],
   weekImages,
   dailyWeatherByDate,
   currentWeather,
+  temperatureUnit = "C",
+  onToggleTemperatureUnit,
   onPrevWeek,
   onNextWeek,
   onResetThisWeek,
@@ -141,6 +175,14 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
   onMigrateTaskToNextWeek,
   onClearCompletedWeeklySidebar,
   onClearCompletedLongTermSidebar,
+  onAddTaskInBucket,
+  onMoveTaskToBucket,
+  onClearCompletedInBucket,
+  onCreateBucket,
+  onRenameBucket,
+  onSaveBucketLayouts,
+  onCountTasksInBucket,
+  onDeleteHiddenBucket,
   onAddWeekImage,
   onUpdateWeekImage,
   onDeleteWeekImage,
@@ -153,13 +195,31 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
     format(addDays(startObj, i), "yyyy-MM-dd")
   );
 
-  const [weeklyDraft, setWeeklyDraft] = useState("");
-  const [longTermDraft, setLongTermDraft] = useState("");
+  const [draftsByBucket, setDraftsByBucket] = useState<Record<string, string>>({});
+  const [renamingBucketId, setRenamingBucketId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState<string>("");
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
+
+  const [headerContextMenu, setHeaderContextMenu] = useState<{
+    x: number;
+    y: number;
+    bucketId: string;
+    title: string;
+  } | null>(null);
+  const [pageContextMenu, setPageContextMenu] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
+  const [weatherContextMenu, setWeatherContextMenu] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
+  const [isManageListsOpen, setIsManageListsOpen] = useState(false);
+  const [alertMessage, setAlertMessage] = useState<string | null>(null);
+  const [futureConflictPromptOpen, setFutureConflictPromptOpen] = useState(false);
 
   const spreadContainerRef = useRef<HTMLDivElement | null>(null);
   const tasksBoxRef = useRef<HTMLDivElement | null>(null);
-  const weeklySectionRef = useRef<HTMLDivElement | null>(null);
-  const longTermSectionRef = useRef<HTMLDivElement | null>(null);
 
   // Track last cursor (x%, y%) over the planner spread for Ctrl+V / Cmd+V sticker placement
   const lastCursorPctRef = useRef<{ xPct: number; yPct: number } | null>(null);
@@ -168,56 +228,255 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
   const [tasksBoxWidthPx, setTasksBoxWidthPx] = useState<number>(400);
   // Draggable vertical separator percentage (default 50% center, double-click to reset to 50%)
   const [leftSplitPct, setLeftSplitPct] = useState<number>(50);
-  // Draggable horizontal split ratio between Weekly Tasks and Long-Term Tasks (default 0.5 center)
-  const [tasksSplitRatio, setTasksSplitRatio] = useState<number>(0.5);
 
-  const handleTasksSplitPointerDown = (
-    e: React.PointerEvent<HTMLDivElement>
+  const activeDefs = useMemo(
+    () =>
+      bucketDefinitions.length > 0
+        ? bucketDefinitions
+        : getDefaultBucketDefinitions(),
+    [bucketDefinitions]
+  );
+
+  const defById = useMemo(
+    () => new Map(activeDefs.map((d) => [d.id, d])),
+    [activeDefs]
+  );
+
+  const resolvedLayout = useMemo(
+    () => resolveWeekLayout(weekStartDate, bucketLayouts, activeDefs),
+    [weekStartDate, bucketLayouts, activeDefs]
+  );
+
+  const [liveEntries, setLiveEntries] = useState<BucketLayoutEntry[] | null>(
+    null
+  );
+  const [swapCueBucketId, setSwapCueBucketId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLiveEntries(null);
+  }, [weekStartDate, bucketLayouts, activeDefs]);
+
+  useEffect(() => {
+    if (renamingBucketId) {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }
+  }, [renamingBucketId]);
+
+  // Close context menus on window click/escape
+  useEffect(() => {
+    if (!headerContextMenu && !pageContextMenu && !weatherContextMenu) return;
+    const closeAll = () => {
+      setHeaderContextMenu(null);
+      setPageContextMenu(null);
+      setWeatherContextMenu(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeAll();
+    };
+    window.addEventListener("mousedown", closeAll);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", closeAll);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [headerContextMenu, pageContextMenu, weatherContextMenu]);
+
+  const effectiveEntries = liveEntries ?? resolvedLayout;
+  const visibleEntries = useMemo(
+    () => effectiveEntries.filter((e) => e.visible && defById.has(e.bucket_id)),
+    [effectiveEntries, defById]
+  );
+
+  const commitWeekLayoutChange = async (nextEntries: BucketLayoutEntry[]) => {
+    const snapshots = planThisWeekLayoutEdit(
+      weekStartDate,
+      nextEntries,
+      bucketLayouts,
+      activeDefs
+    );
+    await onSaveBucketLayouts?.(snapshots);
+  };
+
+  const handleHeaderDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement;
+    if (target.closest("button") || target.closest("input")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const equalized = equalizeVisibleRatios(effectiveEntries);
+    void commitWeekLayoutChange(equalized);
+  };
+
+  const handleHeaderPointerDown = (
+    e: React.PointerEvent<HTMLDivElement>,
+    startVisibleIdx: number
   ) => {
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
-    if (target.closest("button")) return;
+    if (target.closest("button") || target.closest("input")) return;
+    if (renamingBucketId) return;
 
     e.preventDefault();
     e.stopPropagation();
 
     const tasksEl = tasksBoxRef.current;
     if (!tasksEl) return;
+    const totalHeight = tasksEl.getBoundingClientRect().height;
+    if (totalHeight <= 0) return;
 
-    const MIN_SECTION_HEIGHT_PX = 64;
-    const startClientY = e.clientY;
-    const initialRatio = tasksSplitRatio;
+    const MIN_H = 56;
+    const SWAP_OVERFLOW_PX = 24;
+
+    let workingEntries = effectiveEntries.map((item) => ({ ...item }));
+    const initialRatiosByBucketId = new Map<string, number>();
+    for (const entry of workingEntries) {
+      initialRatiosByBucketId.set(entry.bucket_id, entry.height_ratio);
+    }
+    let currentVIdx = startVisibleIdx;
+    let anchorY = e.clientY;
+    let didChange = false;
+
+    const getVisibleIndices = (arr: BucketLayoutEntry[]): number[] => {
+      const indices: number[] = [];
+      for (let i = 0; i < arr.length; i++) {
+        if (arr[i].visible && defById.has(arr[i].bucket_id)) {
+          indices.push(i);
+        }
+      }
+      return indices;
+    };
+
+    const getVisibleHeightsPx = (arr: BucketLayoutEntry[]): number[] => {
+      const vIndices = getVisibleIndices(arr);
+      if (vIndices.length === 0) return [];
+      const heights: number[] = [];
+      let used = 0;
+      for (let i = 0; i < vIndices.length; i++) {
+        if (i === vIndices.length - 1) {
+          heights.push(Math.max(MIN_H, totalHeight - used));
+        } else {
+          const h = Math.max(
+            MIN_H,
+            Math.round(totalHeight * arr[vIndices[i]].height_ratio)
+          );
+          heights.push(h);
+          used += h;
+        }
+      }
+      return heights;
+    };
+
+    let anchorHeights = getVisibleHeightsPx(workingEntries);
+
+    const swapVisibleAt = (vA: number, vB: number, newClientY: number) => {
+      const vIndices = getVisibleIndices(workingEntries);
+      const idxA = vIndices[vA];
+      const idxB = vIndices[vB];
+      if (idxA === undefined || idxB === undefined) return;
+      const tmp = workingEntries[idxA];
+      workingEntries[idxA] = workingEntries[idxB];
+      workingEntries[idxB] = tmp;
+
+      // Restore each list's own pre-drag height_ratio so intermediate resize
+      // distortion doesn't stick and push replaced lists down the page.
+      workingEntries = workingEntries.map((entry) => ({
+        ...entry,
+        height_ratio:
+          initialRatiosByBucketId.get(entry.bucket_id) ?? entry.height_ratio,
+      }));
+
+      anchorHeights = getVisibleHeightsPx(workingEntries);
+      anchorY = newClientY;
+      didChange = true;
+      setSwapCueBucketId(null);
+      setLiveEntries([...workingEntries]);
+    };
 
     const onPointerMove = (moveEv: PointerEvent) => {
-      const rect = tasksEl.getBoundingClientRect();
-      if (rect.height <= MIN_SECTION_HEIGHT_PX * 2) return;
-      const minRatio = MIN_SECTION_HEIGHT_PX / rect.height;
-      const maxRatio = 1 - minRatio;
-      const dyRatio = (moveEv.clientY - startClientY) / rect.height;
-      const nextRatio = Math.max(
-        minRatio,
-        Math.min(maxRatio, initialRatio + dyRatio)
-      );
-      setTasksSplitRatio(nextRatio);
+      const vIndices = getVisibleIndices(workingEntries);
+      const vLen = vIndices.length;
+      if (vLen <= 1) return;
+
+      const dy = moveEv.clientY - anchorY;
+
+      if (currentVIdx === 0) {
+        // Top header: dragging downward past first section swaps with 2nd list
+        const swapThreshold = Math.min(anchorHeights[0], 72) + SWAP_OVERFLOW_PX;
+        if (dy > swapThreshold - 10) {
+          setSwapCueBucketId(workingEntries[vIndices[1]].bucket_id);
+        } else {
+          setSwapCueBucketId(null);
+        }
+        if (dy >= swapThreshold) {
+          swapVisibleAt(0, 1, moveEv.clientY);
+          currentVIdx = 1;
+        }
+        return;
+      }
+
+      const aboveVIdx = currentVIdx - 1;
+      const pairH = anchorHeights[aboveVIdx] + anchorHeights[currentVIdx];
+      const rawAboveH = anchorHeights[aboveVIdx] + dy;
+      const rawCurrH = pairH - rawAboveH;
+
+      // Check swap upward with list above
+      if (rawAboveH < MIN_H - SWAP_OVERFLOW_PX) {
+        swapVisibleAt(aboveVIdx, currentVIdx, moveEv.clientY);
+        currentVIdx = aboveVIdx;
+        return;
+      }
+
+      // Check swap downward with list below (or into top of next list)
+      if (rawCurrH < MIN_H - SWAP_OVERFLOW_PX) {
+        if (currentVIdx < vLen - 1) {
+          swapVisibleAt(currentVIdx, currentVIdx + 1, moveEv.clientY);
+          currentVIdx = currentVIdx + 1;
+        } else {
+          swapVisibleAt(aboveVIdx, currentVIdx, moveEv.clientY);
+          currentVIdx = aboveVIdx;
+        }
+        return;
+      }
+
+      if (rawAboveH <= MIN_H + 4 || rawCurrH <= MIN_H + 4) {
+        setSwapCueBucketId(workingEntries[vIndices[currentVIdx]].bucket_id);
+      } else {
+        setSwapCueBucketId(null);
+      }
+
+      // Normal resize between aboveVIdx and currentVIdx
+      const maxAboveH = Math.max(MIN_H, pairH - MIN_H);
+      const clampedAboveH = Math.max(MIN_H, Math.min(maxAboveH, rawAboveH));
+      const clampedCurrH = Math.max(MIN_H, pairH - clampedAboveH);
+
+      const nextHeights = [...anchorHeights];
+      nextHeights[aboveVIdx] = clampedAboveH;
+      nextHeights[currentVIdx] = clampedCurrH;
+      const sumH = nextHeights.reduce((a, b) => a + b, 0) || totalHeight;
+
+      for (let i = 0; i < vIndices.length; i++) {
+        workingEntries[vIndices[i]] = {
+          ...workingEntries[vIndices[i]],
+          height_ratio: nextHeights[i] / sumH,
+        };
+      }
+      didChange = true;
+      setLiveEntries([...workingEntries]);
     };
 
     const onPointerUp = () => {
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", onPointerUp);
+      setSwapCueBucketId(null);
+      if (didChange) {
+        void commitWeekLayoutChange(workingEntries);
+      } else {
+        setLiveEntries(null);
+      }
     };
 
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", onPointerUp);
-  };
-
-  const handleTasksSplitDoubleClick = (
-    e: React.MouseEvent<HTMLDivElement>
-  ) => {
-    const target = e.target as HTMLElement;
-    if (target.closest("button")) return;
-    e.preventDefault();
-    e.stopPropagation();
-    setTasksSplitRatio(0.5);
   };
 
   const handleDividerPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -368,51 +627,50 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
     return () => window.removeEventListener("paste", handleGlobalPaste);
   }, []);
 
+  const moveBucketRef = useRef(onMoveTaskToBucket);
+  moveBucketRef.current = onMoveTaskToBucket;
   const moveWeeklyRef = useRef(onMoveTaskToWeeklySidebar);
   moveWeeklyRef.current = onMoveTaskToWeeklySidebar;
   const moveLongTermRef = useRef(onMoveTaskToLongTermSidebar);
   moveLongTermRef.current = onMoveTaskToLongTermSidebar;
+  const defByIdRef = useRef(defById);
+  defByIdRef.current = defById;
 
-  // Pointer-based drop listeners for Weekly Tasks and Long-Term Tasks sections
+  // Delegated pointer-based drop listener for all dynamic task list buckets
   useEffect(() => {
-    const weeklyEl = weeklySectionRef.current;
-    const longTermEl = longTermSectionRef.current;
+    const tasksEl = tasksBoxRef.current;
+    if (!tasksEl) return;
 
-    const handleWeeklyPointerDrop = (e: Event) => {
+    const handleBucketPointerDrop = (e: Event) => {
       const custom = e as CustomEvent<{ taskId: number }>;
       const taskId = custom.detail?.taskId ?? getActiveDraggedTaskId();
-      if (taskId && taskId > 0) {
-        moveWeeklyRef.current(taskId);
+      if (!taskId || taskId <= 0) return;
+
+      const targetEl = e.target as HTMLElement | null;
+      const zoneEl = targetEl?.closest("[data-task-drop-zone]");
+      const zoneAttr = zoneEl?.getAttribute("data-task-drop-zone") || "";
+
+      if (zoneAttr.startsWith("bucket:")) {
+        const bucketId = zoneAttr.slice("bucket:".length);
+        const def = defByIdRef.current.get(bucketId);
+        const scope: BucketScope =
+          def?.scope ?? (bucketId === "long_term" ? "persistent" : "weekly");
+        if (moveBucketRef.current) {
+          moveBucketRef.current(taskId, bucketId, scope);
+        } else if (scope === "persistent") {
+          moveLongTermRef.current(taskId);
+        } else {
+          moveWeeklyRef.current(taskId);
+        }
         setActiveDraggedTaskId(null);
       }
     };
 
-    const handleLongTermPointerDrop = (e: Event) => {
-      const custom = e as CustomEvent<{ taskId: number }>;
-      const taskId = custom.detail?.taskId ?? getActiveDraggedTaskId();
-      if (taskId && taskId > 0) {
-        moveLongTermRef.current(taskId);
-        setActiveDraggedTaskId(null);
-      }
-    };
-
-    weeklyEl?.addEventListener(
-      "planner:task-pointer-drop",
-      handleWeeklyPointerDrop
-    );
-    longTermEl?.addEventListener(
-      "planner:task-pointer-drop",
-      handleLongTermPointerDrop
-    );
-
+    tasksEl.addEventListener("planner:task-pointer-drop", handleBucketPointerDrop);
     return () => {
-      weeklyEl?.removeEventListener(
+      tasksEl.removeEventListener(
         "planner:task-pointer-drop",
-        handleWeeklyPointerDrop
-      );
-      longTermEl?.removeEventListener(
-        "planner:task-pointer-drop",
-        handleLongTermPointerDrop
+        handleBucketPointerDrop
       );
     };
   }, []);
@@ -430,8 +688,121 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
   const dayRowHeightPx = CELLS_PER_DAY * gridSizePx;
   const totalSevenDaysHeightPx = TOTAL_WEEK_GRID_ROWS * gridSizePx;
   const tasksBoxHeightPx = TASKS_BOX_GRID_ROWS * gridSizePx;
-  const weeklySectionHeightPx = Math.round(tasksBoxHeightPx * tasksSplitRatio);
-  const longTermSectionHeightPx = tasksBoxHeightPx - weeklySectionHeightPx;
+
+  const allSidebarTasks = useMemo(
+    () => [...weeklySidebarTasks, ...longTermSidebarTasks],
+    [weeklySidebarTasks, longTermSidebarTasks]
+  );
+
+  const visibleHeightsPx = useMemo(() => {
+    if (visibleEntries.length === 0) return [];
+    const heights: number[] = [];
+    let used = 0;
+    for (let i = 0; i < visibleEntries.length; i++) {
+      if (i === visibleEntries.length - 1) {
+        heights.push(Math.max(56, tasksBoxHeightPx - used));
+      } else {
+        const h = Math.max(
+          56,
+          Math.round(tasksBoxHeightPx * visibleEntries[i].height_ratio)
+        );
+        heights.push(h);
+        used += h;
+      }
+    }
+    return heights;
+  }, [visibleEntries, tasksBoxHeightPx]);
+
+  const handleHideBucketOnCurrentPage = (bucketId: string) => {
+    const next = effectiveEntries.map((entry) =>
+      entry.bucket_id === bucketId
+        ? { ...entry, visible: false, height_ratio: 0 }
+        : entry
+    );
+    void commitWeekLayoutChange(normalizeLayoutEntries(next, activeDefs));
+  };
+
+  const handleToggleBucketVisibilityFromModal = (
+    bucketId: string,
+    nextVisible: boolean
+  ) => {
+    const next = effectiveEntries.map((entry) =>
+      entry.bucket_id === bucketId
+        ? {
+            ...entry,
+            visible: nextVisible,
+            height_ratio: nextVisible ? 0 : 0,
+          }
+        : entry
+    );
+    void commitWeekLayoutChange(normalizeLayoutEntries(next, activeDefs));
+  };
+
+  const handleAddNewBucket = async (scope: BucketScope) => {
+    if (visibleEntries.length >= MAX_VISIBLE_BUCKETS) {
+      setAlertMessage(MAX_VISIBLE_BUCKETS_MESSAGE);
+      return;
+    }
+    if (!onCreateBucket) return;
+    const defaultTitle =
+      scope === "persistent" ? "New Long-Term List" : "New Weekly List";
+    const created = await onCreateBucket(defaultTitle, scope);
+    const nextDefs = [...activeDefs, created];
+    const nextEntries: BucketLayoutEntry[] = [
+      ...effectiveEntries,
+      { bucket_id: created.id, visible: true, height_ratio: 0 },
+    ];
+    const normalized = normalizeLayoutEntries(nextEntries, nextDefs);
+    const snapshots = planThisWeekLayoutEdit(
+      weekStartDate,
+      normalized,
+      bucketLayouts,
+      nextDefs
+    );
+    await onSaveBucketLayouts?.(snapshots);
+    setRenameDraft(created.title);
+    setRenamingBucketId(created.id);
+  };
+
+  const handleSetDefaultFromThisWeek = async () => {
+    const futureOverrides = findFutureExplicitOverrides(
+      weekStartDate,
+      bucketLayouts
+    );
+    if (futureOverrides.length > 0) {
+      setFutureConflictPromptOpen(true);
+      return;
+    }
+    const snapshots = planSetDefaultLayoutFromWeek(
+      weekStartDate,
+      effectiveEntries,
+      bucketLayouts,
+      activeDefs,
+      "overwrite_all"
+    );
+    await onSaveBucketLayouts?.(snapshots);
+  };
+
+  const handleResolveFutureDefaultConflict = async (
+    mode: "overwrite_all" | "keep_overrides"
+  ) => {
+    setFutureConflictPromptOpen(false);
+    const snapshots = planSetDefaultLayoutFromWeek(
+      weekStartDate,
+      effectiveEntries,
+      bucketLayouts,
+      activeDefs,
+      mode
+    );
+    await onSaveBucketLayouts?.(snapshots);
+  };
+
+  const commitHeaderRename = async (bucketId: string, originalTitle: string) => {
+    setRenamingBucketId(null);
+    const trimmed = renameDraft.trim();
+    if (!trimmed || trimmed === originalTitle) return;
+    await onRenameBucket?.(bucketId, trimmed);
+  };
 
   const monthNameUpper = format(startObj, "MMMM").toUpperCase();
   const monthNum = format(startObj, "M");
@@ -452,13 +823,6 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
         return `${n}th`;
     }
   };
-
-  const completedWeeklyCount = weeklySidebarTasks.filter(
-    (t) => t.is_completed
-  ).length;
-  const completedLongTermCount = longTermSidebarTasks.filter(
-    (t) => t.is_completed
-  ).length;
 
   return (
     <div
@@ -588,6 +952,7 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
                   events={dayEvents}
                   tasks={dayTasks}
                   weather={dailyWeatherByDate[dStr]}
+                  temperatureUnit={temperatureUnit}
                   onHideGoogleEvent={onHideGoogleEvent}
                   onUnhideAllForDay={onUnhideAllForDay}
                   onAddTask={onAddTaskInDay}
@@ -618,8 +983,14 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
             {/* Tasks Box with 100% Square Crisp SVG Grid */}
             <div
               ref={tasksBoxRef}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setHeaderContextMenu(null);
+                setPageContextMenu({ x: e.clientX, y: e.clientY });
+              }}
               style={{ height: `${tasksBoxHeightPx}px` }}
-              className="border-t border-b border-hobo-lineDark relative flex flex-col shrink-0 overflow-hidden"
+              className="border-t border-b border-hobo-lineDark relative flex flex-col shrink-0 overflow-hidden pointer-events-auto"
             >
               <CrispSquareGrid
                 cellSizePx={gridSizePx}
@@ -627,130 +998,155 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
                 widthPx={tasksBoxWidthPx}
               />
 
-              {/* SECTION 1: WEEKLY TASKS */}
-              <div
-                ref={weeklySectionRef}
-                data-task-drop-zone="weekly"
-                style={{ height: `${weeklySectionHeightPx}px` }}
-                className="relative z-10 shrink-0 flex flex-col px-3 py-1.5 overflow-hidden pointer-events-none"
-              >
-                <div className="flex items-center justify-between mb-1 select-none pointer-events-auto">
-                  <span className="text-[10px] uppercase tracking-[0.16em] font-normal text-hobo-ink">
-                    WEEKLY TASKS
-                  </span>
+              {visibleEntries.map((entry, vIdx) => {
+                const def = defById.get(entry.bucket_id);
+                if (!def) return null;
+                const sectionHeightPx = visibleHeightsPx[vIdx] ?? 100;
+                const bucketTasks = allSidebarTasks.filter((t) => {
+                  const tBucket =
+                    t.bucket_id || (t.is_long_term ? "long_term" : "weekly");
+                  return tBucket === def.id;
+                });
+                const completedCount = bucketTasks.filter(
+                  (t) => t.is_completed
+                ).length;
+                const draft = draftsByBucket[def.id] ?? "";
+                const isRenaming = renamingBucketId === def.id;
+                const isSwapTarget = swapCueBucketId === def.id;
 
-                  {completedWeeklyCount > 0 && (
-                    <button
-                      type="button"
-                      onClick={onClearCompletedWeeklySidebar}
-                      className="text-[9px] uppercase tracking-[0.1em] text-hobo-muted hover:text-hobo-red bg-transparent border-0 p-0 transition-colors"
-                    >
-                      Clear completed
-                    </button>
-                  )}
-                </div>
-
-                <div className="flex-1 min-h-0 overflow-y-auto space-y-0.5 pr-1 pointer-events-none">
-                  <div className="space-y-0.5 pointer-events-auto">
-                    {weeklySidebarTasks.map((task) => (
-                      <TaskItem
-                        key={task.id}
-                        task={task}
-                        onToggleComplete={onToggleTask}
-                        onEditTitle={onEditTaskTitle}
-                        onDelete={onDeleteTask}
-                        onMoveToDate={onMoveTaskToDate}
-                        onMoveToLongTermSidebar={onMoveTaskToLongTermSidebar}
-                        onMigratePrevWeek={onMigrateTaskToPrevWeek}
-                        onMigrateNextWeek={onMigrateTaskToNextWeek}
-                        showMigrationArrows
-                      />
-                    ))}
-                  </div>
-
-                  {/* "+" Task prompt directly underneath existing tasks */}
-                  <div className="flex items-center gap-1 py-[1px] pointer-events-auto">
-                    <Plus className="w-2.5 h-2.5 text-hobo-muted shrink-0 stroke-[1.5]" />
-                    <input
-                      type="text"
-                      value={weeklyDraft}
-                      onChange={(e) => setWeeklyDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && weeklyDraft.trim()) {
-                          e.preventDefault();
-                          onAddWeeklySidebarTask(weeklyDraft.trim());
-                          setWeeklyDraft("");
-                        }
+                return (
+                  <div
+                    key={def.id}
+                    data-task-drop-zone={`bucket:${def.id}`}
+                    style={{ height: `${sectionHeightPx}px` }}
+                    className={`relative z-10 shrink-0 flex flex-col px-3 py-1.5 overflow-hidden pointer-events-none ${
+                      isSwapTarget ? "border-t-2 border-hobo-red" : ""
+                    }`}
+                  >
+                    {/* Draggable / Double-Clickable / Right-Clickable List Header */}
+                    <div
+                      onPointerDown={(e) => handleHeaderPointerDown(e, vIdx)}
+                      onDoubleClick={handleHeaderDoubleClick}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setPageContextMenu(null);
+                        setHeaderContextMenu({
+                          x: e.clientX,
+                          y: e.clientY,
+                          bucketId: def.id,
+                          title: def.title,
+                        });
                       }}
-                      placeholder=""
-                      className="w-full bg-transparent text-[12px] leading-[16px] text-hobo-ink outline-none border-0 p-0 font-light"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* SECTION 2: LONG-TERM TASKS (header is draggable up/down, double-click resets to center) */}
-              <div
-                ref={longTermSectionRef}
-                data-task-drop-zone="longterm"
-                style={{ height: `${longTermSectionHeightPx}px` }}
-                className="relative z-10 shrink-0 flex flex-col px-3 py-1.5 overflow-hidden pointer-events-none"
-              >
-                <div
-                  onPointerDown={handleTasksSplitPointerDown}
-                  onDoubleClick={handleTasksSplitDoubleClick}
-                  className="flex items-center justify-between mb-1 select-none pointer-events-auto cursor-ns-resize"
-                >
-                  <span className="text-[10px] uppercase tracking-[0.16em] font-normal text-hobo-ink">
-                    LONG-TERM TASKS
-                  </span>
-
-                  {completedLongTermCount > 0 && (
-                    <button
-                      type="button"
-                      onClick={onClearCompletedLongTermSidebar}
-                      className="text-[9px] uppercase tracking-[0.1em] text-hobo-muted hover:text-hobo-red bg-transparent border-0 p-0 transition-colors"
+                      className="flex items-center justify-between mb-1 select-none pointer-events-auto cursor-ns-resize"
                     >
-                      Clear completed
-                    </button>
-                  )}
-                </div>
+                      {isRenaming ? (
+                        <input
+                          ref={renameInputRef}
+                          type="text"
+                          value={renameDraft}
+                          onChange={(e) => setRenameDraft(e.target.value)}
+                          onBlur={() => void commitHeaderRename(def.id, def.title)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              void commitHeaderRename(def.id, def.title);
+                            } else if (e.key === "Escape") {
+                              setRenamingBucketId(null);
+                            }
+                          }}
+                          className="bg-white/80 border border-hobo-red px-1.5 py-0 text-[10px] uppercase tracking-[0.14em] text-hobo-ink outline-none"
+                        />
+                      ) : (
+                        <span className="text-[10px] uppercase tracking-[0.16em] font-normal text-hobo-ink">
+                          {def.title}
+                        </span>
+                      )}
 
-                <div className="flex-1 min-h-0 overflow-y-auto space-y-0.5 pr-1 pointer-events-none">
-                  <div className="space-y-0.5 pointer-events-auto">
-                    {longTermSidebarTasks.map((task) => (
-                      <TaskItem
-                        key={task.id}
-                        task={task}
-                        onToggleComplete={onToggleTask}
-                        onEditTitle={onEditTaskTitle}
-                        onDelete={onDeleteTask}
-                        onMoveToDate={onMoveTaskToDate}
-                        onMoveToWeeklySidebar={onMoveTaskToWeeklySidebar}
-                      />
-                    ))}
-                  </div>
+                      {completedCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (onClearCompletedInBucket) {
+                              onClearCompletedInBucket(def.id, def.scope);
+                            } else if (def.scope === "persistent") {
+                              onClearCompletedLongTermSidebar();
+                            } else {
+                              onClearCompletedWeeklySidebar();
+                            }
+                          }}
+                          className="text-[9px] uppercase tracking-[0.1em] text-hobo-muted hover:text-hobo-red bg-transparent border-0 p-0 transition-colors"
+                        >
+                          Clear completed
+                        </button>
+                      )}
+                    </div>
 
-                  {/* "+" Task prompt directly underneath existing tasks */}
-                  <div className="flex items-center gap-1 py-[1px] pointer-events-auto">
-                    <Plus className="w-2.5 h-2.5 text-hobo-muted shrink-0 stroke-[1.5]" />
-                    <input
-                      type="text"
-                      value={longTermDraft}
-                      onChange={(e) => setLongTermDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && longTermDraft.trim()) {
-                          e.preventDefault();
-                          onAddLongTermSidebarTask(longTermDraft.trim());
-                          setLongTermDraft("");
-                        }
-                      }}
-                      placeholder=""
-                      className="w-full bg-transparent text-[12px] leading-[16px] text-hobo-ink outline-none border-0 p-0 font-light"
-                    />
+                    <div className="flex-1 min-h-0 overflow-y-auto space-y-0.5 pr-1 pointer-events-none">
+                      <div className="space-y-0.5 pointer-events-auto">
+                        {bucketTasks.map((task) => (
+                          <TaskItem
+                            key={task.id}
+                            task={task}
+                            onToggleComplete={onToggleTask}
+                            onEditTitle={onEditTaskTitle}
+                            onDelete={onDeleteTask}
+                            onMoveToDate={onMoveTaskToDate}
+                            onMigratePrevWeek={
+                              def.scope === "weekly"
+                                ? onMigrateTaskToPrevWeek
+                                : undefined
+                            }
+                            onMigrateNextWeek={
+                              def.scope === "weekly"
+                                ? onMigrateTaskToNextWeek
+                                : undefined
+                            }
+                            showMigrationArrows={def.scope === "weekly"}
+                          />
+                        ))}
+                      </div>
+
+                      {/* "+" Task prompt directly underneath existing tasks */}
+                      <div className="flex items-center gap-1 py-[1px] pointer-events-auto">
+                        <Plus className="w-2.5 h-2.5 text-hobo-muted shrink-0 stroke-[1.5]" />
+                        <input
+                          type="text"
+                          value={draft}
+                          onChange={(e) =>
+                            setDraftsByBucket((prev) => ({
+                              ...prev,
+                              [def.id]: e.target.value,
+                            }))
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && draft.trim()) {
+                              e.preventDefault();
+                              if (onAddTaskInBucket) {
+                                onAddTaskInBucket(
+                                  def.id,
+                                  def.scope,
+                                  draft.trim()
+                                );
+                              } else if (def.scope === "persistent") {
+                                onAddLongTermSidebarTask(draft.trim());
+                              } else {
+                                onAddWeeklySidebarTask(draft.trim());
+                              }
+                              setDraftsByBucket((prev) => ({
+                                ...prev,
+                                [def.id]: "",
+                              }));
+                            }
+                          }}
+                          placeholder=""
+                          className="w-full bg-transparent text-[12px] leading-[16px] text-hobo-ink outline-none border-0 p-0 font-light"
+                        />
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
+                );
+              })}
             </div>
 
             {/* Right Page Bottom Footer: Sits inside the 7th slot (`height = dayRowHeightPx`), aligned at the bottom above the 24px border */}
@@ -762,7 +1158,9 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
                 onContextMenu={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  onOpenWeatherLocation?.();
+                  setHeaderContextMenu(null);
+                  setPageContextMenu(null);
+                  setWeatherContextMenu({ x: e.clientX, y: e.clientY });
                 }}
                 className="min-w-0 flex-1 text-[10px] leading-snug text-hobo-muted pointer-events-auto cursor-context-menu"
               >
@@ -779,11 +1177,12 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
                       </strong>
                       :{" "}
                       <strong className="font-normal text-hobo-ink group-hover/curweather:text-hobo-red">
-                        {currentWeather.temperature}°C
+                        {formatTemperature(currentWeather.temperature, temperatureUnit)}
                       </strong>
                       , {currentWeather.conditionLabel.toLowerCase()}.
                       <br />
-                      High {currentWeather.tempMax}°C · Low {currentWeather.tempMin}°C.
+                      High {formatTemperature(currentWeather.tempMax, temperatureUnit)} · Low{" "}
+                      {formatTemperature(currentWeather.tempMin, temperatureUnit)}.
                     </span>
                   </div>
                 ) : (
@@ -803,6 +1202,237 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Weather Right-Click Menu: Set location | Show in °C / °F */}
+      {weatherContextMenu &&
+        createPortal(
+          <div
+            style={{
+              position: "fixed",
+              left: `${Math.min(weatherContextMenu.x, window.innerWidth - 120)}px`,
+              top: `${Math.min(weatherContextMenu.y, window.innerHeight - 90)}px`,
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+            className="z-[80] w-fit bg-hobo-paperSolid border border-hobo-lineDark shadow-md py-1 text-[11px] font-light select-none"
+          >
+            <button
+              type="button"
+              onClick={() => {
+                setWeatherContextMenu(null);
+                onOpenWeatherLocation?.();
+              }}
+              className="block w-full text-left px-2.5 py-1 whitespace-nowrap text-hobo-ink hover:bg-hobo-paperHover hover:text-hobo-red bg-transparent border-0 transition-colors"
+            >
+              Set location
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setWeatherContextMenu(null);
+                onToggleTemperatureUnit?.();
+              }}
+              className="block w-full text-left px-2.5 py-1 whitespace-nowrap text-hobo-ink hover:bg-hobo-paperHover hover:text-hobo-red bg-transparent border-0 transition-colors"
+            >
+              {temperatureUnit === "C" ? "Show in °F" : "Show in °C"}
+            </button>
+          </div>,
+          document.body
+        )}
+
+      {/* Header Right-Click Menu: Rename | Hide list */}
+      {headerContextMenu &&
+        createPortal(
+          <div
+            style={{
+              position: "fixed",
+              left: `${Math.min(headerContextMenu.x, window.innerWidth - 110)}px`,
+              top: `${Math.min(headerContextMenu.y, window.innerHeight - 90)}px`,
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+            className="z-[80] w-fit bg-hobo-paperSolid border border-hobo-lineDark shadow-md py-1 text-[11px] font-light select-none"
+          >
+            <button
+              type="button"
+              onClick={() => {
+                const { bucketId, title } = headerContextMenu;
+                setHeaderContextMenu(null);
+                setRenameDraft(title);
+                setRenamingBucketId(bucketId);
+              }}
+              className="block w-full text-left px-2.5 py-1 whitespace-nowrap text-hobo-ink hover:bg-hobo-paperHover hover:text-hobo-red bg-transparent border-0 transition-colors"
+            >
+              Rename
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const { bucketId } = headerContextMenu;
+                setHeaderContextMenu(null);
+                handleHideBucketOnCurrentPage(bucketId);
+              }}
+              className="block w-full text-left px-2.5 py-1 whitespace-nowrap text-hobo-ink hover:bg-hobo-paperHover hover:text-hobo-red bg-transparent border-0 transition-colors"
+            >
+              Hide list
+            </button>
+          </div>,
+          document.body
+        )}
+
+      {/* Tasks Page Right-Click Menu */}
+      {pageContextMenu &&
+        createPortal(
+          <div
+            style={{
+              position: "fixed",
+              left: `${Math.min(pageContextMenu.x, window.innerWidth - 150)}px`,
+              top: `${Math.min(pageContextMenu.y, window.innerHeight - 150)}px`,
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+            className="z-[80] w-fit bg-hobo-paperSolid border border-hobo-lineDark shadow-md py-1 text-[11px] font-light select-none"
+          >
+            <button
+              type="button"
+              onClick={() => {
+                setPageContextMenu(null);
+                setIsManageListsOpen(true);
+              }}
+              className="block w-full text-left px-2.5 py-1 whitespace-nowrap text-hobo-ink hover:bg-hobo-paperHover hover:text-hobo-red bg-transparent border-0 transition-colors"
+            >
+              Manage lists
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setPageContextMenu(null);
+                void handleAddNewBucket("weekly");
+              }}
+              className="block w-full text-left px-2.5 py-1 whitespace-nowrap text-hobo-ink hover:bg-hobo-paperHover hover:text-hobo-red bg-transparent border-0 transition-colors"
+            >
+              New weekly list
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setPageContextMenu(null);
+                void handleAddNewBucket("persistent");
+              }}
+              className="block w-full text-left px-2.5 py-1 whitespace-nowrap text-hobo-ink hover:bg-hobo-paperHover hover:text-hobo-red bg-transparent border-0 transition-colors"
+            >
+              New long-term list
+            </button>
+            <div className="my-0.5 border-t border-hobo-line" />
+            <button
+              type="button"
+              onClick={() => {
+                setPageContextMenu(null);
+                void handleSetDefaultFromThisWeek();
+              }}
+              className="block w-full text-left px-2.5 py-1 whitespace-nowrap text-hobo-ink hover:bg-hobo-paperHover hover:text-hobo-red bg-transparent border-0 transition-colors"
+            >
+              Set default forward
+            </button>
+          </div>,
+          document.body
+        )}
+
+      {/* Manage Hidden Lists Modal */}
+      <ManageHiddenListsModal
+        isOpen={isManageListsOpen}
+        bucketDefinitions={activeDefs}
+        layoutEntries={effectiveEntries}
+        onClose={() => setIsManageListsOpen(false)}
+        onToggleVisibility={handleToggleBucketVisibilityFromModal}
+        onRenameBucket={(id, newTitle) => onRenameBucket?.(id, newTitle)}
+        onCountTasksInBucket={async (id) =>
+          (await onCountTasksInBucket?.(id)) ?? 0
+        }
+        onDeleteHiddenBucket={(id) => onDeleteHiddenBucket?.(id)}
+      />
+
+      {/* Max 4 Visible Lists Alert Modal */}
+      {alertMessage && (
+        <div
+          className="fixed inset-0 z-[75] bg-black/30 flex items-center justify-center p-4 select-none pointer-events-auto"
+          onClick={() => setAlertMessage(null)}
+        >
+          <div
+            className="w-full max-w-[320px] bg-hobo-paperSolid border border-hobo-lineDark shadow-lg p-4 space-y-3 text-xs font-light"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <p className="text-[11px] leading-relaxed text-hobo-ink">
+                {alertMessage}
+              </p>
+              <button
+                type="button"
+                onClick={() => setAlertMessage(null)}
+                className="p-0.5 text-hobo-muted hover:text-hobo-red bg-transparent border-0 shrink-0"
+              >
+                <X className="w-3.5 h-3.5 stroke-[1.5]" />
+              </button>
+            </div>
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => setAlertMessage(null)}
+                className="px-3 py-1 text-[10px] uppercase tracking-[0.12em] border border-hobo-lineDark text-hobo-ink hover:border-hobo-red hover:text-hobo-red bg-transparent"
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Future Explicit Override Conflict Modal */}
+      {futureConflictPromptOpen && (
+        <div
+          className="fixed inset-0 z-[75] bg-black/30 flex items-center justify-center p-4 select-none pointer-events-auto"
+          onClick={() => setFutureConflictPromptOpen(false)}
+        >
+          <div
+            className="w-full max-w-[360px] bg-hobo-paperSolid border border-hobo-lineDark shadow-lg p-4 space-y-3 text-xs font-light"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-hobo-line pb-2">
+              <h4 className="text-[11px] uppercase tracking-[0.14em] text-hobo-ink font-normal">
+                Future Custom Layouts Found
+              </h4>
+              <button
+                type="button"
+                onClick={() => setFutureConflictPromptOpen(false)}
+                className="p-0.5 text-hobo-muted hover:text-hobo-red bg-transparent border-0"
+              >
+                <X className="w-3.5 h-3.5 stroke-[1.5]" />
+              </button>
+            </div>
+            <p className="text-[11px] leading-relaxed text-hobo-ink">
+              One or more future weeks already have a custom layout. How should
+              this new default apply?
+            </p>
+            <div className="flex flex-col gap-1.5 pt-1">
+              <button
+                type="button"
+                onClick={() =>
+                  void handleResolveFutureDefaultConflict("keep_overrides")
+                }
+                className="w-full py-1.5 px-2.5 text-left text-[10px] uppercase tracking-[0.1em] border border-hobo-red bg-hobo-redSoft text-hobo-red hover:bg-hobo-red hover:text-white transition-colors"
+              >
+                Keep custom future weeks
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  void handleResolveFutureDefaultConflict("overwrite_all")
+                }
+                className="w-full py-1.5 px-2.5 text-left text-[10px] uppercase tracking-[0.1em] border border-hobo-lineDark text-hobo-ink hover:border-hobo-red hover:text-hobo-red bg-transparent transition-colors"
+              >
+                Overwrite all future weeks
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

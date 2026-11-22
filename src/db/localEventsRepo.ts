@@ -1,14 +1,11 @@
 import {
-  addDays,
-  addMonths,
-  addWeeks,
-  addYears,
   format,
   parseISO,
   subDays,
 } from "date-fns";
 import { getDatabase, notifyDatabaseUpdated } from "./database";
 import { generateUuid } from "../utils/id";
+import { expandLocalEventsInRange } from "../../shared/plannerCore";
 import {
   CreateLocalEventInput,
   GoogleEvent,
@@ -50,14 +47,6 @@ function parseJsonStringArray(raw: string | null | undefined): string[] {
   }
 }
 
-function deterministicNegativeId(key: string): number {
-  let hash = 0;
-  for (let i = 0; i < key.length; i++) {
-    hash = (hash * 31 + key.charCodeAt(i)) | 0;
-  }
-  const abs = Math.abs(hash) || 1;
-  return -abs;
-}
 
 function mapRowToLocalEvent(row: RawLocalEventRow): LocalEvent {
   return {
@@ -92,81 +81,6 @@ export async function getAllLocalEventsForBackup(): Promise<LocalEvent[]> {
   return rows.map(mapRowToLocalEvent);
 }
 
-function buildIsoForDateAndTime(dateStr: string, hhmm: string | null): string {
-  if (!hhmm || !/^\d{2}:\d{2}$/.test(hhmm)) {
-    return `${dateStr}T00:00:00.000Z`;
-  }
-  const localDate = new Date(`${dateStr}T${hhmm}:00`);
-  if (Number.isNaN(localDate.getTime())) {
-    return `${dateStr}T00:00:00.000Z`;
-  }
-  return localDate.toISOString();
-}
-
-function toCalendarEventOccurrence(
-  ev: LocalEvent,
-  occDateStr: string
-): GoogleEvent {
-  const instanceKey = `local::${ev.id}::${occDateStr}`;
-  const startIso = ev.is_all_day
-    ? `${occDateStr}T00:00:00.000Z`
-    : buildIsoForDateAndTime(occDateStr, ev.start_time);
-  const endIso = ev.is_all_day
-    ? `${occDateStr}T23:59:59.000Z`
-    : buildIsoForDateAndTime(occDateStr, ev.end_time || ev.start_time);
-
-  return {
-    id: deterministicNegativeId(instanceKey),
-    instance_key: instanceKey,
-    uid: ev.id,
-    source_url: "local",
-    calendar_name: "Local",
-    title: ev.title,
-    description: null,
-    location: ev.location,
-    start_time: startIso,
-    end_time: endIso,
-    event_date: occDateStr,
-    is_all_day: ev.is_all_day,
-    is_hidden: ev.hidden_dates.includes(occDateStr),
-    last_synced: ev.updated_at,
-    is_local: true,
-    local_event_id: ev.id,
-    is_repeating: ev.is_repeating,
-    repeat_type: ev.repeat_type,
-    repeat_interval: ev.repeat_interval,
-    repeat_unit: ev.repeat_unit,
-    local_start_hhmm: ev.start_time,
-    local_end_hhmm: ev.end_time,
-  };
-}
-
-function computeOccurrenceDate(
-  startObj: Date,
-  stepIndex: number,
-  repeatType: RepeatType | null,
-  repeatInterval: number,
-  repeatUnit: RepeatUnit | null
-): Date {
-  if (stepIndex === 0) return startObj;
-  const interval = Math.max(1, repeatInterval || 1);
-
-  if (repeatType === "monthly") {
-    return addMonths(startObj, stepIndex);
-  }
-  if (repeatType === "annual") {
-    return addYears(startObj, stepIndex);
-  }
-  // Custom: x days, weeks, or months
-  if (repeatUnit === "weeks") {
-    return addWeeks(startObj, stepIndex * interval);
-  }
-  if (repeatUnit === "months") {
-    return addMonths(startObj, stepIndex * interval);
-  }
-  return addDays(startObj, stepIndex * interval);
-}
-
 /**
  * Queries and expands all `local_events` (including repeating series)
  * within `[rangeStart, rangeEnd]` (inclusive `YYYY-MM-DD`).
@@ -186,56 +100,11 @@ export async function getExpandedLocalEventsInRange(
     [rangeEnd, rangeStart]
   );
 
-  const occurrences: GoogleEvent[] = [];
-
-  for (const row of rows) {
-    const ev = mapRowToLocalEvent(row);
-    const excludedSet = new Set(ev.excluded_dates);
-
-    if (!ev.is_repeating) {
-      if (
-        ev.event_date >= rangeStart &&
-        ev.event_date <= rangeEnd &&
-        !excludedSet.has(ev.event_date)
-      ) {
-        occurrences.push(toCalendarEventOccurrence(ev, ev.event_date));
-      }
-      continue;
-    }
-
-    const effectiveEnd =
-      ev.repeat_end_date && ev.repeat_end_date < rangeEnd
-        ? ev.repeat_end_date
-        : rangeEnd;
-
-    if (ev.event_date > effectiveEnd) {
-      continue;
-    }
-
-    const startObj = parseISO(ev.event_date);
-    const MAX_STEPS = 5000;
-
-    for (let step = 0; step < MAX_STEPS; step++) {
-      const occDate = computeOccurrenceDate(
-        startObj,
-        step,
-        ev.repeat_type,
-        ev.repeat_interval,
-        ev.repeat_unit
-      );
-      const occDateStr = format(occDate, "yyyy-MM-dd");
-
-      if (occDateStr > effectiveEnd) {
-        break;
-      }
-
-      if (occDateStr >= rangeStart && !excludedSet.has(occDateStr)) {
-        occurrences.push(toCalendarEventOccurrence(ev, occDateStr));
-      }
-    }
-  }
-
-  return occurrences;
+  return expandLocalEventsInRange(
+    rows.map(mapRowToLocalEvent),
+    rangeStart,
+    rangeEnd
+  );
 }
 
 export async function createLocalEvent(

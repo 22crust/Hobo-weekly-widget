@@ -14,7 +14,10 @@ import { syncConfigToRustBackend } from "../../services/githubSyncService";
 import { usePlannerData } from "../../hooks/usePlannerData";
 import {
   fetchWeatherForecast,
+  getSavedTemperatureUnit,
+  saveTemperatureUnit,
   saveWeatherLocation,
+  TemperatureUnit,
 } from "../../services/weatherService";
 import {
   checkForAppUpdate,
@@ -106,6 +109,9 @@ export const PlannerWidget: React.FC = () => {
   const [isNotesOpen, setIsNotesOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isWeatherLocationOpen, setIsWeatherLocationOpen] = useState(false);
+  const [temperatureUnit, setTemperatureUnit] = useState<TemperatureUnit>(() =>
+    getSavedTemperatureUnit()
+  );
   const [isGithubAuthPromptOpen, setIsGithubAuthPromptOpen] = useState(false);
   const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
   const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
@@ -198,6 +204,8 @@ export const PlannerWidget: React.FC = () => {
     datedTasks,
     weeklySidebarTasks,
     longTermSidebarTasks,
+    bucketDefinitions,
+    bucketLayouts,
     weekImages,
     syncStatus,
     githubSyncStatus,
@@ -212,6 +220,12 @@ export const PlannerWidget: React.FC = () => {
     migrateTaskToWeek,
     clearCompletedForWeekSidebar,
     clearCompletedForLongTermSidebar,
+    clearCompletedForBucket,
+    createBucket,
+    renameBucket,
+    saveBucketLayouts,
+    countTasksInBucket,
+    deleteHiddenBucket,
     removeTask,
     addWeekImage,
     editWeekImage,
@@ -508,9 +522,17 @@ export const PlannerWidget: React.FC = () => {
             datedTasks={datedTasks}
             weeklySidebarTasks={weeklySidebarTasks}
             longTermSidebarTasks={longTermSidebarTasks}
+            bucketDefinitions={bucketDefinitions}
+            bucketLayouts={bucketLayouts}
             weekImages={weekImages}
             dailyWeatherByDate={weather.dailyByDate}
             currentWeather={weather.current}
+            temperatureUnit={temperatureUnit}
+            onToggleTemperatureUnit={() => {
+              const next: TemperatureUnit = temperatureUnit === "C" ? "F" : "C";
+              saveTemperatureUnit(next);
+              setTemperatureUnit(next);
+            }}
             calendarHoverRef={calendarHoverRef}
             notesHoverRef={notesHoverRef}
             onPrevWeek={() => setCurrentWeekDate((d) => subWeeks(d, 1))}
@@ -580,6 +602,32 @@ export const PlannerWidget: React.FC = () => {
             onClearCompletedLongTermSidebar={() =>
               clearCompletedForLongTermSidebar()
             }
+            onAddTaskInBucket={(bucketId, scope, title) =>
+              addTask({
+                title,
+                assigned_date: null,
+                assigned_week_start: scope === "persistent" ? null : weekStartStr,
+                is_long_term: scope === "persistent",
+                bucket_id: bucketId,
+                show_in_weekly: false,
+                show_in_sidebar: true,
+              })
+            }
+            onMoveTaskToBucket={(id, bucketId, scope) =>
+              moveTaskToSidebar(id, {
+                weekStartDate: scope === "persistent" ? null : weekStartStr,
+                isLongTerm: scope === "persistent",
+                bucketId,
+              })
+            }
+            onClearCompletedInBucket={(bucketId, scope) =>
+              clearCompletedForBucket(bucketId, scope, weekStartStr, weekEndStr)
+            }
+            onCreateBucket={(title, scope) => createBucket(title, scope)}
+            onRenameBucket={(id, newTitle) => renameBucket(id, newTitle)}
+            onSaveBucketLayouts={(snapshots) => saveBucketLayouts(snapshots)}
+            onCountTasksInBucket={(bucketId) => countTasksInBucket(bucketId)}
+            onDeleteHiddenBucket={(bucketId) => deleteHiddenBucket(bucketId)}
             onAddWeekImage={(input) => addWeekImage(input)}
             onUpdateWeekImage={(id, updates) => editWeekImage(id, updates)}
             onDeleteWeekImage={(id) => removeWeekImage(id)}

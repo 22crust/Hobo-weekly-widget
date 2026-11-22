@@ -9,6 +9,7 @@ import {
   TaskItem,
 } from "../common/TaskItem";
 import { WeatherIcon } from "../common/WeatherIcon";
+import { formatTemperature, TemperatureUnit } from "../../services/weatherService";
 
 interface DayColumnProps {
   dateStr: string; // YYYY-MM-DD
@@ -17,6 +18,7 @@ interface DayColumnProps {
   events: GoogleEvent[];
   tasks: LocalTask[];
   weather?: DailyWeather;
+  temperatureUnit?: TemperatureUnit;
   onHideGoogleEvent: (id: number, event?: GoogleEvent) => void;
   onUnhideAllForDay: (dateStr: string) => void;
   onAddTask: (title: string, dateStr: string) => void;
@@ -38,6 +40,7 @@ export const DayColumn: React.FC<DayColumnProps> = ({
   events,
   tasks,
   weather,
+  temperatureUnit = "C",
   onHideGoogleEvent,
   onUnhideAllForDay,
   onAddTask,
@@ -136,7 +139,8 @@ export const DayColumn: React.FC<DayColumnProps> = ({
           />
           {weather && (
             <span className="pointer-events-none opacity-0 group-hover/weather:opacity-100 transition-opacity absolute left-full ml-1.5 top-1/2 -translate-y-1/2 whitespace-nowrap text-[10px] text-hobo-red font-normal z-30">
-              {weather.tempMax}°C / {weather.tempMin}°C
+              {formatTemperature(weather.tempMax, temperatureUnit)} /{" "}
+              {formatTemperature(weather.tempMin, temperatureUnit)}
             </span>
           )}
         </div>

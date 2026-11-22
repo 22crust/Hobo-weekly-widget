@@ -13,8 +13,11 @@ export const MobileNotesTab: React.FC = () => {
   const [pages, setPages] = useState<NotePage[]>([]);
   const [currentPageIdx, setCurrentPageIdx] = useState(0);
   const [draftContent, setDraftContent] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const saveTimerRef = useRef<number | null>(null);
   const dirtyPageIdRef = useRef<string | null>(null);
+  const latestDraftRef = useRef<string>("");
+  const lastSyncedPageIdRef = useRef<string | null>(null);
 
   const currentPage = pages[currentPageIdx] ?? null;
 
@@ -40,10 +43,22 @@ export const MobileNotesTab: React.FC = () => {
 
   useEffect(() => {
     if (!currentPage) {
+      lastSyncedPageIdRef.current = null;
+      latestDraftRef.current = "";
       setDraftContent("");
       return;
     }
-    if (dirtyPageIdRef.current !== currentPage.id) {
+    const switchedPage = lastSyncedPageIdRef.current !== currentPage.id;
+    if (switchedPage) {
+      lastSyncedPageIdRef.current = currentPage.id;
+      latestDraftRef.current = currentPage.content;
+      setDraftContent(currentPage.content);
+    } else if (
+      dirtyPageIdRef.current !== currentPage.id &&
+      document.activeElement !== textareaRef.current &&
+      latestDraftRef.current !== currentPage.content
+    ) {
+      latestDraftRef.current = currentPage.content;
       setDraftContent(currentPage.content);
     }
   }, [currentPage?.id, currentPage?.content]);
@@ -53,11 +68,14 @@ export const MobileNotesTab: React.FC = () => {
       window.clearTimeout(saveTimerRef.current);
       saveTimerRef.current = null;
     }
-    dirtyPageIdRef.current = null;
     await updateNotePageContent(pageId, content);
+    if (dirtyPageIdRef.current === pageId && latestDraftRef.current === content) {
+      dirtyPageIdRef.current = null;
+    }
   }, []);
 
   const handleChange = (val: string) => {
+    latestDraftRef.current = val;
     setDraftContent(val);
     if (!currentPage) return;
     const pageId = currentPage.id;
@@ -67,8 +85,11 @@ export const MobileNotesTab: React.FC = () => {
     }
     saveTimerRef.current = window.setTimeout(() => {
       saveTimerRef.current = null;
-      dirtyPageIdRef.current = null;
-      void updateNotePageContent(pageId, val);
+      void updateNotePageContent(pageId, val).then(() => {
+        if (dirtyPageIdRef.current === pageId && latestDraftRef.current === val) {
+          dirtyPageIdRef.current = null;
+        }
+      });
     }, 350);
   };
 
@@ -159,6 +180,7 @@ export const MobileNotesTab: React.FC = () => {
 
       {/* Plain Hobonichi Grid Note Area (no extra lines) */}
       <textarea
+        ref={textareaRef}
         value={draftContent}
         onChange={(e) => handleChange(e.target.value)}
         className="flex-1 w-full py-1 bg-transparent text-[13.5px] leading-[20px] text-hobo-ink outline-none resize-none"

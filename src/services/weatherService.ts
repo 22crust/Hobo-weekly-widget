@@ -19,7 +19,33 @@ export interface CitySearchResult {
 
 const WEATHER_CACHE_KEY = "hobonichi_planner_weather_cache_v2";
 const WEATHER_LOCATION_KEY = "hobo_weather_location_v1";
+const WEATHER_UNIT_KEY = "hobo_weather_unit_v1";
 const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+export type TemperatureUnit = "C" | "F";
+
+export function getSavedTemperatureUnit(): TemperatureUnit {
+  try {
+    return localStorage.getItem(WEATHER_UNIT_KEY) === "F" ? "F" : "C";
+  } catch {
+    return "C";
+  }
+}
+
+export function saveTemperatureUnit(unit: TemperatureUnit): void {
+  try {
+    localStorage.setItem(WEATHER_UNIT_KEY, unit);
+  } catch {
+    // Ignore storage error
+  }
+}
+
+export function formatTemperature(celsius: number, unit: TemperatureUnit): string {
+  if (unit === "F") {
+    return `${Math.round((celsius * 9) / 5 + 32)}°F`;
+  }
+  return `${Math.round(celsius)}°C`;
+}
 
 /**
  * Maps WMO Weather interpretation codes (WW) to concise, Hobonichi-style English descriptions.

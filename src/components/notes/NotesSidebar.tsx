@@ -64,6 +64,8 @@ export const NotesSidebar: React.FC<NotesSidebarProps> = ({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const saveTimerRef = useRef<number | null>(null);
   const dirtyPageIdRef = useRef<string | null>(null);
+  const latestDraftRef = useRef<string>("");
+  const lastSyncedPageIdRef = useRef<string | null>(null);
   const isPageActionPendingRef = useRef<boolean>(false);
 
   const currentPage = pages[currentPageIdx] ?? null;
@@ -98,13 +100,25 @@ export const NotesSidebar: React.FC<NotesSidebarProps> = ({
     void loadPages();
   }, [loadPages]);
 
-  // Sync draftContent when switching pages (unless actively typing on that same page)
+  // Sync draftContent when switching pages (never overwrite while actively typing or focused)
   useEffect(() => {
     if (!currentPage) {
+      lastSyncedPageIdRef.current = null;
+      latestDraftRef.current = "";
       setDraftContent("");
       return;
     }
-    if (dirtyPageIdRef.current !== currentPage.id) {
+    const switchedPage = lastSyncedPageIdRef.current !== currentPage.id;
+    if (switchedPage) {
+      lastSyncedPageIdRef.current = currentPage.id;
+      latestDraftRef.current = currentPage.content;
+      setDraftContent(currentPage.content);
+    } else if (
+      dirtyPageIdRef.current !== currentPage.id &&
+      document.activeElement !== textareaRef.current &&
+      latestDraftRef.current !== currentPage.content
+    ) {
+      latestDraftRef.current = currentPage.content;
       setDraftContent(currentPage.content);
     }
     void loadStickersForPage(currentPage.id);
@@ -192,7 +206,7 @@ export const NotesSidebar: React.FC<NotesSidebarProps> = ({
         saveTimerRef.current = null;
       }
       await updateNotePageContent(pageId, text);
-      if (dirtyPageIdRef.current === pageId) {
+      if (dirtyPageIdRef.current === pageId && latestDraftRef.current === text) {
         dirtyPageIdRef.current = null;
       }
       setPages((prev) =>
@@ -204,6 +218,7 @@ export const NotesSidebar: React.FC<NotesSidebarProps> = ({
 
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const nextVal = e.target.value;
+    latestDraftRef.current = nextVal;
     setDraftContent(nextVal);
     if (!currentPageId) return;
 
@@ -451,16 +466,16 @@ export const NotesSidebar: React.FC<NotesSidebarProps> = ({
           <div
             style={{
               position: "fixed",
-              left: `${Math.min(contextMenuPos.x, window.innerWidth - 165)}px`,
+              left: `${Math.min(contextMenuPos.x, window.innerWidth - 115)}px`,
               top: `${Math.min(contextMenuPos.y, window.innerHeight - 80)}px`,
             }}
             onClick={(e) => e.stopPropagation()}
-            className="z-[9999] w-40 bg-hobo-paperSolid border border-hobo-lineDark shadow-sm py-1 px-1 pointer-events-auto select-none"
+            className="z-[9999] w-fit bg-hobo-paperSolid border border-hobo-lineDark shadow-sm py-1 px-0.5 pointer-events-auto select-none"
           >
             <button
               type="button"
               onClick={() => void handleAddPageAfterCurrent()}
-              className="w-full flex items-center gap-1.5 px-2 py-1 text-[11px] text-hobo-ink hover:text-hobo-red hover:bg-hobo-redSoft transition-colors bg-transparent border-0 text-left"
+              className="w-full flex items-center gap-1.5 px-2.5 py-1 whitespace-nowrap text-[11px] text-hobo-ink hover:text-hobo-red hover:bg-hobo-redSoft transition-colors bg-transparent border-0 text-left"
             >
               <FilePlus2 className="w-3 h-3 stroke-[1.5]" />
               <span>Add Page</span>
@@ -470,7 +485,7 @@ export const NotesSidebar: React.FC<NotesSidebarProps> = ({
               type="button"
               disabled={pages.length <= 1}
               onClick={() => void handleDeleteCurrentPage()}
-              className="w-full flex items-center gap-1.5 px-2 py-1 text-[11px] text-hobo-ink hover:text-hobo-red hover:bg-hobo-redSoft disabled:opacity-40 disabled:pointer-events-none transition-colors bg-transparent border-0 text-left"
+              className="w-full flex items-center gap-1.5 px-2.5 py-1 whitespace-nowrap text-[11px] text-hobo-ink hover:text-hobo-red hover:bg-hobo-redSoft disabled:opacity-40 disabled:pointer-events-none transition-colors bg-transparent border-0 text-left"
             >
               <Trash2 className="w-3 h-3 stroke-[1.5]" />
               <span>Delete Page</span>

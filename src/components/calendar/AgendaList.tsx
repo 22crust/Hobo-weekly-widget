@@ -11,6 +11,12 @@ import {
 } from "../../types/planner";
 import { formatEventTimeLabel } from "../common/GoogleEventCard";
 import { TaskItem } from "../common/TaskItem";
+import {
+  formatHHmm,
+  getSavedTimeFormat,
+  subscribeTimeFormat,
+  TimeFormat,
+} from "../../../shared/timeFormat";
 
 interface AgendaListProps {
   selectedDate: string;
@@ -88,6 +94,13 @@ export const AgendaList: React.FC<AgendaListProps> = ({
   onEditTaskTitle,
   onDeleteTask,
 }) => {
+  const [timeFormat, setTimeFormat] = useState<TimeFormat>(() =>
+    getSavedTimeFormat()
+  );
+
+  useEffect(() => {
+    return subscribeTimeFormat(setTimeFormat);
+  }, []);
   const parsedDate = parseISO(selectedDate);
   const formattedHeader = format(parsedDate, "EEE, MMM d, yyyy").toUpperCase();
 
@@ -272,7 +285,7 @@ export const AgendaList: React.FC<AgendaListProps> = ({
               <div className="flex items-center justify-between gap-2">
                 <div className="min-w-0 flex items-center gap-2 flex-1">
                   <span className="font-normal text-[10px] leading-none tracking-tight opacity-90 shrink-0">
-                    {formatEventTimeLabel(ev)}
+                    {formatEventTimeLabel(ev, timeFormat)}
                   </span>
                   {ev.location && (
                     <span className="min-w-0 inline-flex items-center gap-0.5 text-[10px] leading-none opacity-80">
@@ -414,7 +427,7 @@ export const AgendaList: React.FC<AgendaListProps> = ({
                   >
                     {TIME_SLOTS_15M.slice(0, -1).map((slot) => (
                       <option key={slot} value={slot}>
-                        {slot}
+                        {formatHHmm(slot, timeFormat)}
                       </option>
                     ))}
                   </select>
@@ -426,7 +439,7 @@ export const AgendaList: React.FC<AgendaListProps> = ({
                   >
                     {endTimeOptions.map((slot) => (
                       <option key={slot} value={slot}>
-                        {slot}
+                        {formatHHmm(slot, timeFormat)}
                       </option>
                     ))}
                   </select>

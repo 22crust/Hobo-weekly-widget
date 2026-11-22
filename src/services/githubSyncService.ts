@@ -2,6 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { getAppSettings } from "../db/appSettingsRepo";
 import {
+  applyRemotePreferences,
+  getSyncedPreferencesForBackup,
+} from "../../shared/timeFormat";
+import {
   getAllLocalTasks,
   purgeAllSoftDeletedRecordsNow,
   purgeExpiredSoftDeletedRecords,
@@ -11,6 +15,10 @@ import {
 import { getAllWeekImages } from "../db/weekImagesRepo";
 import { getAllLocalEventsForBackup } from "../db/localEventsRepo";
 import { getAllNotePagesForBackup } from "../db/notePagesRepo";
+import {
+  getAllBucketDefinitionsForBackup,
+  getAllBucketLayouts,
+} from "../db/bucketsRepo";
 import { getAllCachedCalendarEvents } from "../db/googleEventsRepo";
 import {
   AppSettings,
@@ -66,12 +74,15 @@ export function extractRemoteTasks(
  * Strictly excludes `google_events` and `app_settings`.
  */
 export async function buildLocalBackupPayload(): Promise<PlannerBackupPayload> {
-  const [tasks, images, localEvents, notePages] = await Promise.all([
-    getAllLocalTasks(),
-    getAllWeekImages(),
-    getAllLocalEventsForBackup(),
-    getAllNotePagesForBackup(),
-  ]);
+  const [tasks, images, localEvents, notePages, bucketDefs, bucketLayouts] =
+    await Promise.all([
+      getAllLocalTasks(),
+      getAllWeekImages(),
+      getAllLocalEventsForBackup(),
+      getAllNotePagesForBackup(),
+      getAllBucketDefinitionsForBackup(),
+      getAllBucketLayouts(),
+    ]);
 
   return {
     schema_version: CURRENT_SCHEMA_VERSION,
@@ -80,6 +91,9 @@ export async function buildLocalBackupPayload(): Promise<PlannerBackupPayload> {
     week_images: images,
     local_events: localEvents,
     note_pages: notePages,
+    bucket_definitions: bucketDefs,
+    bucket_layouts: bucketLayouts,
+    preferences: getSyncedPreferencesForBackup(),
   };
 }
 
@@ -137,11 +151,14 @@ export async function pushLocalDataToGithubNow(
     overwriteRemote,
   });
   if (!overwriteRemote && merged) {
+    applyRemotePreferences(merged.preferences);
     await upsertRemoteBackupIntoLocal(
       extractRemoteTasks(merged),
       merged.week_images ?? [],
       merged.local_events ?? [],
-      merged.note_pages ?? []
+      merged.note_pages ?? [],
+      merged.bucket_definitions ?? [],
+      merged.bucket_layouts ?? []
     );
   }
   void pushCalendarCacheToGithub();
@@ -201,11 +218,14 @@ export async function pullAndMergeFromGithub(
     try {
       pullResult = await invoke<GithubPullResult>("pull_from_github");
       if (pullResult?.payload) {
+        applyRemotePreferences(pullResult.payload.preferences);
         await upsertRemoteBackupIntoLocal(
           extractRemoteTasks(pullResult.payload),
           pullResult.payload.week_images ?? [],
           pullResult.payload.local_events ?? [],
-          pullResult.payload.note_pages ?? []
+          pullResult.payload.note_pages ?? [],
+          pullResult.payload.bucket_definitions ?? [],
+          pullResult.payload.bucket_layouts ?? []
         );
       }
     } catch (err) {
@@ -310,24 +330,32 @@ export async function resolveInitialGithubMigration(
   const remoteImages = remotePayload.week_images ?? [];
   const remoteLocalEvents = remotePayload.local_events ?? [];
   const remoteNotePages = remotePayload.note_pages ?? [];
+  const remoteBucketDefs = remotePayload.bucket_definitions ?? [];
+  const remoteBucketLayouts = remotePayload.bucket_layouts ?? [];
 
   if (mode === "keep_remote") {
+    applyRemotePreferences(remotePayload.preferences);
     await replaceAllLocalDataWithRemote(
       remoteTasks,
       remoteImages,
       remoteLocalEvents,
-      remoteNotePages
+      remoteNotePages,
+      remoteBucketDefs,
+      remoteBucketLayouts
     );
     const count = await pushLocalDataToGithubNow(true);
     return `Loaded ${count} task${count === 1 ? "" : "s"} from GitHub backup.`;
   }
 
   // "merge": Merge by `id` keeping newest (`updated_at` vs. `deleted_at`) and preserving unique items
+  applyRemotePreferences(remotePayload.preferences);
   await upsertRemoteBackupIntoLocal(
     remoteTasks,
     remoteImages,
     remoteLocalEvents,
-    remoteNotePages
+    remoteNotePages,
+    remoteBucketDefs,
+    remoteBucketLayouts
   );
   const totalMerged = await pushLocalDataToGithubNow(false);
   return `Merged and backed up ${totalMerged} task${totalMerged === 1 ? "" : "s"} with GitHub.`;

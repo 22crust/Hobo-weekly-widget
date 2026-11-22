@@ -42,6 +42,8 @@ export function App() {
     datedTasks,
     weeklySidebarTasks,
     longTermSidebarTasks,
+    bucketDefinitions,
+    bucketLayouts,
     settings,
     isRefreshing,
     githubSyncStatus,
@@ -74,6 +76,12 @@ export function App() {
       if (zone.startsWith("day:")) {
         const dateStr = zone.slice(4);
         void actions.moveTaskToDate(syncId, dateStr);
+      } else if (zone.startsWith("bucket:")) {
+        const bucketId = zone.slice("bucket:".length);
+        const def = bucketDefinitions.find((b) => b.id === bucketId);
+        const scope =
+          def?.scope ?? (bucketId === "long_term" ? "persistent" : "weekly");
+        void actions.moveTaskToBucket(syncId, bucketId, scope);
       } else if (zone === "weekly-sidebar") {
         void actions.moveTaskToWeeklySidebar(syncId);
       } else if (zone === "long-term") {
@@ -82,7 +90,7 @@ export function App() {
     };
     window.addEventListener("pwa:task-drop", handleTaskDrop);
     return () => window.removeEventListener("pwa:task-drop", handleTaskDrop);
-  }, [actions]);
+  }, [actions, bucketDefinitions]);
 
   const dismissAuthPromptToday = () => {
     localStorage.setItem(
@@ -180,24 +188,19 @@ export function App() {
               />
 
               <MobileTasksSection
+                weekStartDate={weekStartDate}
                 weeklyTasks={weeklySidebarTasks}
                 longTermTasks={longTermSidebarTasks}
-                onAddWeeklyTask={(title) =>
+                bucketDefinitions={bucketDefinitions}
+                bucketLayouts={bucketLayouts}
+                onAddTaskInBucket={(bucketId, scope, title) =>
                   void actions.addTask({
                     title,
                     assigned_date: null,
-                    assigned_week_start: weekStartDate,
-                    is_long_term: false,
-                    show_in_weekly: false,
-                    show_in_sidebar: true,
-                  })
-                }
-                onAddLongTermTask={(title) =>
-                  void actions.addTask({
-                    title,
-                    assigned_date: null,
-                    assigned_week_start: null,
-                    is_long_term: true,
+                    assigned_week_start:
+                      scope === "persistent" ? null : weekStartDate,
+                    is_long_term: scope === "persistent",
+                    bucket_id: bucketId,
                     show_in_weekly: false,
                     show_in_sidebar: true,
                   })
@@ -213,11 +216,8 @@ export function App() {
                 onMigrateWeeklyToNextWeek={(syncId) =>
                   void actions.migrateTaskToNextWeek(syncId)
                 }
-                onClearCompletedWeekly={() =>
-                  void actions.clearCompletedWeeklySidebar()
-                }
-                onClearCompletedLongTerm={() =>
-                  void actions.clearCompletedLongTermSidebar()
+                onClearCompletedInBucket={(bucketId, scope) =>
+                  void actions.clearCompletedForBucket(bucketId, scope)
                 }
               />
             </>

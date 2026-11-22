@@ -6,7 +6,6 @@ import {
   Download,
   Eye,
   EyeOff,
-  HelpCircle,
   Loader2,
   Plus,
   RefreshCw,
@@ -33,10 +32,16 @@ import {
   cleanAllDeletedTasksAndSync,
   extractRemoteTasks,
   pushLocalDataToGithubNow,
+  queueDebouncedGithubPush,
   resolveInitialGithubMigration,
   syncConfigToRustBackend,
   testGithubConnection,
 } from "../../services/githubSyncService";
+import {
+  getSavedTimeFormat,
+  saveTimeFormat,
+  TimeFormat,
+} from "../../../shared/timeFormat";
 import {
   AppSettings,
   CalendarFeedSyncResult,
@@ -84,6 +89,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [accentColor, setAccentColor] = useState(() =>
     getSavedAccentColorSync()
   );
+  const [timeFormat, setTimeFormat] = useState<TimeFormat>(() =>
+    getSavedTimeFormat()
+  );
   const [showToken, setShowToken] = useState(false);
 
   const [isTesting, setIsTesting] = useState(false);
@@ -112,6 +120,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setStatusMessage(null);
     setPendingRemoteConflict(null);
     setAccentColor(getSavedAccentColorSync());
+    setTimeFormat(getSavedTimeFormat());
     setFeedStatuses(getLatestCalendarFeedResults());
 
     void getAppSettings().then((s) => {
@@ -132,6 +141,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const handleSelectAccentColor = (hex: string) => {
     setAccentColor(hex);
     void saveAccentColor(hex);
+  };
+
+  const handleSelectTimeFormat = (nextFormat: TimeFormat) => {
+    setTimeFormat(nextFormat);
+    saveTimeFormat(nextFormat);
+    if (storageMode === "github") {
+      void queueDebouncedGithubPush();
+    }
   };
 
   const getJoinedCalendarUrls = (): string =>
@@ -446,6 +463,39 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           </div>
 
+          {/* 1b. Time Format Selector (Synced) */}
+          <div className="space-y-1.5 pt-2 border-t border-hobo-line">
+            <div className="flex items-center justify-between">
+              <label className="block text-[10px] uppercase tracking-[0.14em] text-hobo-ink font-normal">
+                TIME FORMAT
+              </label>
+              <div className="inline-flex border border-hobo-lineDark">
+                <button
+                  type="button"
+                  onClick={() => handleSelectTimeFormat("24h")}
+                  className={`px-2 py-0.5 text-[10px] uppercase tracking-[0.08em] border-0 transition-colors ${
+                    timeFormat === "24h"
+                      ? "bg-hobo-red text-white"
+                      : "bg-white/60 text-hobo-ink hover:text-hobo-red"
+                  }`}
+                >
+                  24H
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSelectTimeFormat("12h")}
+                  className={`px-2 py-0.5 text-[10px] uppercase tracking-[0.08em] border-0 border-l border-hobo-lineDark transition-colors ${
+                    timeFormat === "12h"
+                      ? "bg-hobo-red text-white"
+                      : "bg-white/60 text-hobo-ink hover:text-hobo-red"
+                  }`}
+                >
+                  12H
+                </button>
+              </div>
+            </div>
+          </div>
+
           {/* 2. Multi-Calendar Feeds (Google Calendar, Apple iCloud webcal://, Outlook .ics) */}
           <div className="space-y-2 pt-2 border-t border-hobo-line">
             <div className="flex items-center justify-between">
@@ -626,7 +676,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           {/* 4. Conditional GitHub Configuration Fields */}
           {storageMode === "github" && (
-            <div className="space-y-2.5 pt-2 border-t border-hobo-line">
+            <div className="space-y-2.5">
               <div className="grid grid-cols-2 gap-2.5">
                 <div className="space-y-1">
                   <label className="block text-[9px] uppercase tracking-[0.12em] text-hobo-muted">
@@ -807,9 +857,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <button
             type="button"
             onClick={() => setIsTutorialOpen(true)}
-            className="inline-flex items-center gap-1 text-[10px] uppercase tracking-[0.1em] text-hobo-muted hover:text-hobo-red bg-transparent border-0 p-0 transition-colors"
+            className="inline-flex items-center text-[10px] uppercase tracking-[0.1em] text-hobo-muted hover:text-hobo-red bg-transparent border-0 p-0 transition-colors"
           >
-            <HelpCircle className="w-3.5 h-3.5 stroke-[1.5]" />
             <span>Setup Tutorial</span>
           </button>
 

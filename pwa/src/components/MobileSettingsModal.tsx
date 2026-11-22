@@ -3,7 +3,6 @@ import {
   CheckCircle2,
   Eye,
   EyeOff,
-  HelpCircle,
   Loader2,
   X,
 } from "lucide-react";
@@ -14,6 +13,7 @@ import {
   checkGithubRemoteFile,
   extractRemoteTasks,
   pushLocalDataToGithubNow,
+  queueDebouncedGithubPush,
   resolveInitialGithubMigration,
   testGithubConnection,
 } from "../services/githubSyncService";
@@ -22,6 +22,11 @@ import {
   PlannerBackupPayload,
   StorageMode,
 } from "../types/planner";
+import {
+  getSavedTimeFormat,
+  saveTimeFormat,
+  TimeFormat,
+} from "../../../shared/timeFormat";
 import {
   ACCENT_PRESETS,
   DEFAULT_ACCENT_COLOR,
@@ -49,6 +54,9 @@ export const MobileSettingsModal: React.FC<MobileSettingsModalProps> = ({
   const [githubRepo, setGithubRepo] = useState("");
   const [githubFilePath, setGithubFilePath] = useState("planner-data.json");
   const [accentColor, setAccentColor] = useState(DEFAULT_ACCENT_COLOR);
+  const [timeFormat, setTimeFormat] = useState<TimeFormat>(() =>
+    getSavedTimeFormat()
+  );
 
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<{
@@ -73,6 +81,7 @@ export const MobileSettingsModal: React.FC<MobileSettingsModalProps> = ({
       setGithubRepo(initialSettings.github_repo);
       setGithubFilePath(initialSettings.github_file_path || "planner-data.json");
       setAccentColor(normalizeHexColor(initialSettings.accent_color));
+      setTimeFormat(getSavedTimeFormat());
       setTestResult(null);
       setIsCustomPickerOpen(false);
       setErrorMsg(null);
@@ -400,6 +409,45 @@ export const MobileSettingsModal: React.FC<MobileSettingsModalProps> = ({
               )}
             </div>
 
+            {/* Time Format (Synced) */}
+            <div className="pt-2 border-t border-hobo-line flex items-center justify-between gap-2">
+              <span className="text-[11px] uppercase tracking-[0.12em] text-hobo-muted">
+                Time Format
+              </span>
+              <div className="inline-flex border border-hobo-lineDark">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTimeFormat("24h");
+                    saveTimeFormat("24h");
+                    if (storageMode === "github") queueDebouncedGithubPush();
+                  }}
+                  className={`px-2.5 py-1 text-[10px] uppercase tracking-[0.08em] transition-colors ${
+                    timeFormat === "24h"
+                      ? "bg-hobo-red text-white"
+                      : "bg-white/60 text-hobo-ink"
+                  }`}
+                >
+                  24H
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTimeFormat("12h");
+                    saveTimeFormat("12h");
+                    if (storageMode === "github") queueDebouncedGithubPush();
+                  }}
+                  className={`px-2.5 py-1 text-[10px] uppercase tracking-[0.08em] border-l border-hobo-lineDark transition-colors ${
+                    timeFormat === "12h"
+                      ? "bg-hobo-red text-white"
+                      : "bg-white/60 text-hobo-ink"
+                  }`}
+                >
+                  12H
+                </button>
+              </div>
+            </div>
+
             {errorMsg && (
               <p className="text-xs text-hobo-red bg-hobo-redSoft/50 p-2 border border-hobo-red/40">
                 {errorMsg}
@@ -410,9 +458,8 @@ export const MobileSettingsModal: React.FC<MobileSettingsModalProps> = ({
               <button
                 type="button"
                 onClick={() => setIsTutorialOpen(true)}
-                className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider text-hobo-muted hover:text-hobo-red"
+                className="inline-flex items-center text-[10px] uppercase tracking-wider text-hobo-muted hover:text-hobo-red"
               >
-                <HelpCircle className="w-3.5 h-3.5" />
                 <span>Setup Tutorial</span>
               </button>
 

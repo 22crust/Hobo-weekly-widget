@@ -1,11 +1,7 @@
 import React from "react";
 import {
-  AlertTriangle,
-  CheckCircle2,
   ChevronDown,
   ChevronUp,
-  CloudOff,
-  Loader2,
   RefreshCw,
   Settings,
 } from "lucide-react";
@@ -33,59 +29,51 @@ export const TopBar: React.FC<TopBarProps> = ({
   onOpenGithubAuthPrompt,
 }) => {
 
+  const getDotColorClass = (status: GithubSyncStatusPayload["status"]) => {
+    switch (status) {
+      case "syncing":
+        return "bg-amber-500 animate-pulse";
+      case "synced":
+        return "bg-emerald-600";
+      case "error":
+        return "bg-hobo-red";
+      default:
+        return "bg-hobo-muted/60";
+    }
+  };
+
   const renderSyncBadge = () => {
     if (githubSyncStatus.status === "disabled") {
-      return (
-        <button
-          type="button"
-          onClick={onOpenSettings}
-          title="Local-only mode (GitHub sync disabled)"
-          className="inline-flex items-center justify-center p-1.5 text-hobo-muted hover:text-hobo-ink transition-colors"
-        >
-          <CloudOff className="w-4 h-4 stroke-[1.5]" />
-        </button>
-      );
+      return null;
     }
 
-    if (githubSyncStatus.status === "syncing") {
-      return (
-        <span
-          title="Syncing with GitHub..."
-          className="inline-flex items-center justify-center p-1.5 text-hobo-muted"
-        >
-          <Loader2 className="w-4 h-4 stroke-[1.5] animate-spin" />
-        </span>
-      );
-    }
-
-    if (githubSyncStatus.status === "error") {
-      return (
-        <button
-          type="button"
-          onClick={() => {
-            if (onOpenGithubAuthPrompt) onOpenGithubAuthPrompt();
-            else onOpenSettings();
-          }}
-          title={githubSyncStatus.message || "GitHub sync error"}
-          className="inline-flex items-center justify-center p-1.5 text-hobo-red hover:opacity-80 transition-opacity"
-        >
-          <AlertTriangle className="w-4 h-4 stroke-[1.75]" />
-        </button>
-      );
-    }
+    const title =
+      githubSyncStatus.status === "syncing"
+        ? "Syncing with GitHub..."
+        : githubSyncStatus.status === "error"
+        ? githubSyncStatus.message || "GitHub sync error"
+        : githubSyncStatus.last_synced_at
+        ? `Synced with GitHub (${new Date(githubSyncStatus.last_synced_at).toLocaleTimeString()})`
+        : "GitHub sync ready";
 
     return (
       <button
         type="button"
-        onClick={onOpenSettings}
-        title={
-          githubSyncStatus.last_synced_at
-            ? `Synced with GitHub (${new Date(githubSyncStatus.last_synced_at).toLocaleTimeString()})`
-            : "GitHub sync ready"
-        }
-        className="inline-flex items-center justify-center p-1.5 text-emerald-700 hover:opacity-80 transition-opacity"
+        onClick={() => {
+          if (githubSyncStatus.status === "error" && onOpenGithubAuthPrompt) {
+            onOpenGithubAuthPrompt();
+          } else {
+            onOpenSettings();
+          }
+        }}
+        title={title}
+        className="inline-flex items-center justify-center p-1.5 hover:opacity-80 transition-opacity bg-transparent border-0"
       >
-        <CheckCircle2 className="w-4 h-4 stroke-[1.6]" />
+        <span
+          className={`w-2 h-2 rounded-full block ${getDotColorClass(
+            githubSyncStatus.status
+          )}`}
+        />
       </button>
     );
   };

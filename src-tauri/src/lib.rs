@@ -276,6 +276,36 @@ fn get_migrations() -> Vec<Migration> {
             ",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 15,
+            description: "add_custom_task_buckets",
+            sql: "
+                ALTER TABLE local_tasks ADD COLUMN bucket_id TEXT NOT NULL DEFAULT 'weekly';
+                UPDATE local_tasks SET bucket_id = 'long_term' WHERE is_long_term = 1;
+
+                CREATE TABLE IF NOT EXISTS bucket_definitions (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    title TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    deleted_at TEXT
+                );
+
+                INSERT OR IGNORE INTO bucket_definitions (id, title, scope, created_at, updated_at, deleted_at)
+                VALUES
+                    ('weekly', 'Weekly Tasks', 'weekly', '1970-01-01T00:00:00.000Z', '1970-01-01T00:00:00.000Z', NULL),
+                    ('long_term', 'Long-Term Tasks', 'persistent', '1970-01-01T00:00:00.000Z', '1970-01-01T00:00:00.000Z', NULL);
+
+                CREATE TABLE IF NOT EXISTS bucket_layouts (
+                    effective_from_week TEXT PRIMARY KEY NOT NULL,
+                    buckets_json TEXT NOT NULL,
+                    is_explicit_override INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL
+                );
+            ",
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

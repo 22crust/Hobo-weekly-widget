@@ -163,6 +163,8 @@ pub struct SyncedLocalTask {
     #[serde(default, deserialize_with = "deserialize_bool_forgiving")]
     pub is_long_term: bool,
     #[serde(default)]
+    pub bucket_id: Option<String>,
+    #[serde(default)]
     pub start_time: Option<String>,
     #[serde(default)]
     pub end_time: Option<String>,
@@ -429,6 +431,76 @@ pub struct PlannerBackupPayload {
     pub local_events: Vec<SyncedLocalEvent>,
     #[serde(default, deserialize_with = "deserialize_forgiving_vec")]
     pub note_pages: Vec<SyncedNotePage>,
+    #[serde(default, deserialize_with = "deserialize_forgiving_vec")]
+    pub bucket_definitions: Vec<SyncedBucketDefinition>,
+    #[serde(default, deserialize_with = "deserialize_forgiving_vec")]
+    pub bucket_layouts: Vec<SyncedBucketLayoutSnapshot>,
+    #[serde(default)]
+    pub preferences: Option<SyncedPreferences>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SyncedBucketDefinition {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub scope: String,
+    #[serde(default = "default_epoch_iso")]
+    pub created_at: String,
+    #[serde(default = "default_epoch_iso")]
+    pub updated_at: String,
+    #[serde(default)]
+    pub deleted_at: Option<String>,
+}
+
+impl SyncedBucketDefinition {
+    pub fn normalized(mut self) -> Self {
+        if let Some(ref del) = self.deleted_at {
+            if self.updated_at > *del {
+                self.deleted_at = None;
+            }
+        }
+        self
+    }
+
+    pub fn effective_timestamp(&self) -> &str {
+        match &self.deleted_at {
+            Some(del) if del.as_str() > self.updated_at.as_str() => del.as_str(),
+            _ => self.updated_at.as_str(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SyncedPreferences {
+    #[serde(default)]
+    pub time_format: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SyncedBucketLayoutEntry {
+    #[serde(default)]
+    pub bucket_id: String,
+    #[serde(default = "default_true", deserialize_with = "deserialize_bool_forgiving")]
+    pub visible: bool,
+    #[serde(default)]
+    pub height_ratio: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SyncedBucketLayoutSnapshot {
+    #[serde(default)]
+    pub effective_from_week: String,
+    #[serde(default, deserialize_with = "deserialize_forgiving_vec")]
+    pub buckets: Vec<SyncedBucketLayoutEntry>,
+    #[serde(default, deserialize_with = "deserialize_bool_forgiving")]
+    pub is_explicit_override: bool,
+    #[serde(default = "default_epoch_iso")]
+    pub updated_at: String,
 }
 
 impl PlannerBackupPayload {
@@ -438,6 +510,9 @@ impl PlannerBackupPayload {
             && self.week_images == other.week_images
             && self.local_events == other.local_events
             && self.note_pages == other.note_pages
+            && self.bucket_definitions == other.bucket_definitions
+            && self.bucket_layouts == other.bucket_layouts
+            && self.preferences == other.preferences
     }
 }
 
@@ -450,6 +525,9 @@ impl Default for PlannerBackupPayload {
             week_images: Vec::new(),
             local_events: Vec::new(),
             note_pages: Vec::new(),
+            bucket_definitions: Vec::new(),
+            bucket_layouts: Vec::new(),
+            preferences: None,
         }
     }
 }
@@ -566,17 +644,89 @@ pub fn merge_backup_payloads(
         }
     }
 
+    let mut bucket_def_map: BTreeMap<String, SyncedBucketDefinition> = BTreeMap::new();
+    for bd in &local.bucket_definitions {
+        let norm = bd.clone().normalized();
+        if !norm.id.is_empty() {
+            bucket_def_map.insert(norm.id.clone(), norm);
+        }
+    }
+
+    if let Some(rem) = remote {
+        for rbd in &rem.bucket_definitions {
+            let norm_rbd = rbd.clone().normalized();
+            if norm_rbd.id.is_empty() {
+                continue;
+            }
+            match bucket_def_map.get(&norm_rbd.id) {
+                None => {
+                    bucket_def_map.insert(norm_rbd.id.clone(), norm_rbd);
+                }
+                Some(existing) => {
+                    if norm_rbd.effective_timestamp() > existing.effective_timestamp() {
+                        bucket_def_map.insert(norm_rbd.id.clone(), norm_rbd);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut bucket_layout_map: BTreeMap<String, SyncedBucketLayoutSnapshot> = BTreeMap::new();
+    for bl in &local.bucket_layouts {
+        if !bl.effective_from_week.is_empty() {
+            bucket_layout_map.insert(bl.effective_from_week.clone(), bl.clone());
+        }
+    }
+
+    if let Some(rem) = remote {
+        for rbl in &rem.bucket_layouts {
+            if rbl.effective_from_week.is_empty() {
+                continue;
+            }
+            match bucket_layout_map.get(&rbl.effective_from_week) {
+                None => {
+                    bucket_layout_map.insert(rbl.effective_from_week.clone(), rbl.clone());
+                }
+                Some(existing) => {
+                    if rbl.updated_at > existing.updated_at {
+                        bucket_layout_map.insert(rbl.effective_from_week.clone(), rbl.clone());
+                    }
+                }
+            }
+        }
+    }
+
     let mut merged_tasks: Vec<SyncedLocalTask> = task_map.into_values().collect();
     let mut merged_images: Vec<SyncedWeekImage> = image_map.into_values().collect();
     let mut merged_events: Vec<SyncedLocalEvent> = event_map.into_values().collect();
     let mut merged_notes: Vec<SyncedNotePage> = note_map.into_values().collect();
+    let mut merged_bucket_defs: Vec<SyncedBucketDefinition> =
+        bucket_def_map.into_values().collect();
+    let merged_bucket_layouts: Vec<SyncedBucketLayoutSnapshot> =
+        bucket_layout_map.into_values().collect();
 
     if exclude_soft_deleted {
         merged_tasks.retain(|t| t.deleted_at.is_none());
         merged_images.retain(|img| img.deleted_at.is_none());
         merged_events.retain(|ev| ev.deleted_at.is_none());
         merged_notes.retain(|np| np.deleted_at.is_none());
+        merged_bucket_defs.retain(|bd| bd.deleted_at.is_none());
     }
+
+    let merged_preferences = match (&local.preferences, remote.and_then(|r| r.preferences.as_ref())) {
+        (Some(lp), Some(rp)) => {
+            let lts = lp.updated_at.as_deref().unwrap_or("");
+            let rts = rp.updated_at.as_deref().unwrap_or("");
+            if rts > lts {
+                Some(rp.clone())
+            } else {
+                Some(lp.clone())
+            }
+        }
+        (Some(lp), None) => Some(lp.clone()),
+        (None, Some(rp)) => Some(rp.clone()),
+        (None, None) => None,
+    };
 
     PlannerBackupPayload {
         schema_version: CURRENT_SCHEMA_VERSION,
@@ -585,6 +735,9 @@ pub fn merge_backup_payloads(
         week_images: merged_images,
         local_events: merged_events,
         note_pages: merged_notes,
+        bucket_definitions: merged_bucket_defs,
+        bucket_layouts: merged_bucket_layouts,
+        preferences: merged_preferences,
     }
 }
 
@@ -612,6 +765,9 @@ pub fn parse_backup_payload_forgiving(raw_json: &str) -> PlannerBackupPayload {
             week_images: Vec::new(),
             local_events: Vec::new(),
             note_pages: Vec::new(),
+            bucket_definitions: Vec::new(),
+            bucket_layouts: Vec::new(),
+            preferences: None,
         };
     }
 

@@ -1,5 +1,12 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { format, parseISO } from "date-fns";
+import {
+  formatEventTimeRange,
+  formatHHmm,
+  getSavedTimeFormat,
+  subscribeTimeFormat,
+  TimeFormat,
+} from "../../../shared/timeFormat";
 import { MapPin, Pencil, Plus, Repeat, Trash2, X } from "lucide-react";
 import {
   CreateLocalEventInput,
@@ -53,21 +60,6 @@ function minutesToTime(totalMinutes: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
-function formatTimeRange(ev: GoogleEvent): string {
-  if (ev.is_all_day) return "All Day";
-  if (ev.local_start_hhmm && ev.local_end_hhmm) {
-    return `${ev.local_start_hhmm} – ${ev.local_end_hhmm}`;
-  }
-  try {
-    return `${format(parseISO(ev.start_time), "HH:mm")} – ${format(
-      parseISO(ev.end_time),
-      "HH:mm"
-    )}`;
-  } catch {
-    return "";
-  }
-}
-
 export const DayEventsSection: React.FC<DayEventsSectionProps> = ({
   selectedDate,
   events,
@@ -92,6 +84,13 @@ export const DayEventsSection: React.FC<DayEventsSectionProps> = ({
   const [scopePrompt, setScopePrompt] = useState<"edit" | "delete" | null>(
     null
   );
+  const [timeFormat, setTimeFormat] = useState<TimeFormat>(() =>
+    getSavedTimeFormat()
+  );
+
+  useEffect(() => {
+    return subscribeTimeFormat(setTimeFormat);
+  }, []);
 
   const visibleEvents = events.filter((e) => !e.is_hidden);
 
@@ -255,7 +254,7 @@ export const DayEventsSection: React.FC<DayEventsSectionProps> = ({
             >
               <div className="min-w-0 flex-1 flex flex-wrap items-center gap-x-1.5 leading-[16px]">
                 <span className="shrink-0 font-normal text-[10px] leading-[16px] tracking-tight opacity-90">
-                  {formatTimeRange(ev)}
+                  {formatEventTimeRange(ev, timeFormat)}
                 </span>
                 <span className="font-light leading-[16px] break-words">
                   {ev.title}
@@ -343,7 +342,7 @@ export const DayEventsSection: React.FC<DayEventsSectionProps> = ({
                 >
                   {TIME_SLOTS_15M.slice(0, -1).map((slot) => (
                     <option key={slot} value={slot}>
-                      {slot}
+                      {formatHHmm(slot, timeFormat)}
                     </option>
                   ))}
                 </select>
@@ -355,7 +354,7 @@ export const DayEventsSection: React.FC<DayEventsSectionProps> = ({
                 >
                   {endTimeOptions.map((slot) => (
                     <option key={slot} value={slot}>
-                      {slot}
+                      {formatHHmm(slot, timeFormat)}
                     </option>
                   ))}
                 </select>

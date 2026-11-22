@@ -3,6 +3,7 @@ import { addDays, addWeeks, endOfMonth, format, parseISO, startOfMonth, startOfW
 import { onDatabaseUpdated } from "../db/indexedDb";
 import {
   clearCompletedLongTermSidebarTasks,
+  clearCompletedSidebarTasksForBucket,
   clearCompletedWeeklySidebarTasks,
   createLocalEvent,
   createLocalTask,
@@ -10,6 +11,8 @@ import {
   deleteLocalEventAllFuture,
   deleteLocalEventThisOnly,
   deleteLocalTask,
+  getActiveBucketDefinitions,
+  getAllBucketLayouts,
   getAppSettings,
   getCachedCalendarEventsInRange,
   getExpandedLocalEventsInRange,
@@ -29,6 +32,9 @@ import {
 } from "../services/githubSyncService";
 import {
   AppSettings,
+  BucketDefinition,
+  BucketLayoutSnapshot,
+  BucketScope,
   CreateLocalEventInput,
   CreateLocalTaskInput,
   GithubSyncStatusPayload,
@@ -67,6 +73,8 @@ export function useMobilePlannerData(
   const [datedTasks, setDatedTasks] = useState<LocalTask[]>([]);
   const [weeklySidebarTasks, setWeeklySidebarTasks] = useState<LocalTask[]>([]);
   const [longTermSidebarTasks, setLongTermSidebarTasks] = useState<LocalTask[]>([]);
+  const [bucketDefinitions, setBucketDefinitions] = useState<BucketDefinition[]>([]);
+  const [bucketLayouts, setBucketLayouts] = useState<BucketLayoutSnapshot[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [githubSyncStatus, setGithubSyncStatus] = useState<GithubSyncStatusPayload>({
@@ -86,6 +94,8 @@ export function useMobilePlannerData(
         wsTasks,
         ltTasks,
         appSettings,
+        activeBucketDefs,
+        allBucketLayouts,
       ] = await Promise.all([
         getCachedCalendarEventsInRange(weekStartDate, weekEndDate),
         getExpandedLocalEventsInRange(weekStartDate, weekEndDate),
@@ -95,6 +105,8 @@ export function useMobilePlannerData(
         getWeeklySidebarTasks(weekStartDate),
         getLongTermSidebarTasks(),
         getAppSettings(),
+        getActiveBucketDefinitions(),
+        getAllBucketLayouts(),
       ]);
 
       const mergeSortEvents = (a: GoogleEvent[], b: GoogleEvent[]) =>
@@ -111,6 +123,8 @@ export function useMobilePlannerData(
       setDatedTasks(wTasks);
       setWeeklySidebarTasks(wsTasks);
       setLongTermSidebarTasks(ltTasks);
+      setBucketDefinitions(activeBucketDefs);
+      setBucketLayouts(allBucketLayouts);
       setSettings(appSettings);
       applyAccentColor(appSettings.accent_color);
 
@@ -210,11 +224,35 @@ export function useMobilePlannerData(
       moveTaskToLongTermSidebar: async (syncId: string) => {
         await updateLocalTask(syncId, {
           assigned_date: null,
-          assigned_week_start: null,
           is_long_term: true,
+          bucket_id: "long_term",
           show_in_weekly: false,
           show_in_sidebar: true,
         });
+      },
+      moveTaskToBucket: async (
+        syncId: string,
+        bucketId: string,
+        scope: BucketScope
+      ) => {
+        await updateLocalTask(syncId, {
+          assigned_date: null,
+          ...(scope === "weekly" ? { assigned_week_start: weekStartDate } : {}),
+          is_long_term: scope === "persistent",
+          bucket_id: bucketId,
+          show_in_weekly: false,
+          show_in_sidebar: true,
+        });
+      },
+      clearCompletedForBucket: async (
+        bucketId: string,
+        scope: BucketScope
+      ) => {
+        await clearCompletedSidebarTasksForBucket(
+          bucketId,
+          scope,
+          weekStartDate
+        );
       },
       migrateTaskToPrevWeek: async (syncId: string) => {
         const prevWeekStart = format(
@@ -291,6 +329,8 @@ export function useMobilePlannerData(
     datedTasks,
     weeklySidebarTasks,
     longTermSidebarTasks,
+    bucketDefinitions,
+    bucketLayouts,
     settings,
     isRefreshing,
     githubSyncStatus,

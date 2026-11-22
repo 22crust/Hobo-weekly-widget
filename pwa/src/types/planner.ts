@@ -1,3 +1,17 @@
+import {
+  BucketDefinition,
+  BucketLayoutEntry,
+  BucketLayoutSnapshot,
+  BucketScope,
+} from "../../../shared/buckets";
+
+export type {
+  BucketDefinition,
+  BucketLayoutEntry,
+  BucketLayoutSnapshot,
+  BucketScope,
+};
+
 export interface GoogleEvent {
   id: number;
   instance_key: string;
@@ -80,6 +94,7 @@ export interface LocalTask {
   assigned_date: string | null;
   assigned_week_start: string | null;
   is_long_term: boolean;
+  bucket_id?: string;
   start_time: string | null;
   end_time: string | null;
   is_completed: boolean;
@@ -97,6 +112,7 @@ export interface CreateLocalTaskInput {
   assigned_date?: string | null;
   assigned_week_start?: string | null;
   is_long_term?: boolean;
+  bucket_id?: string;
   start_time?: string | null;
   end_time?: string | null;
   show_in_weekly: boolean;
@@ -109,6 +125,7 @@ export interface UpdateLocalTaskInput {
   assigned_date?: string | null;
   assigned_week_start?: string | null;
   is_long_term?: boolean;
+  bucket_id?: string;
   start_time?: string | null;
   end_time?: string | null;
   is_completed?: boolean;
@@ -149,6 +166,8 @@ export interface GithubSyncStatusPayload {
   message: string | null;
 }
 
+import type { SyncedPreferences } from "../../../shared/timeFormat";
+
 export interface PlannerBackupPayload {
   schema_version: number;
   exported_at: string;
@@ -157,6 +176,9 @@ export interface PlannerBackupPayload {
   week_images?: unknown[];
   local_events?: LocalEvent[];
   note_pages?: NotePage[];
+  bucket_definitions?: BucketDefinition[];
+  bucket_layouts?: BucketLayoutSnapshot[];
+  preferences?: SyncedPreferences;
   local_tasks?: LocalTask[];
 }
 

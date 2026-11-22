@@ -1,3 +1,17 @@
+import {
+  BucketDefinition,
+  BucketLayoutEntry,
+  BucketLayoutSnapshot,
+  BucketScope,
+} from "../../shared/buckets";
+
+export type {
+  BucketDefinition,
+  BucketLayoutEntry,
+  BucketLayoutSnapshot,
+  BucketScope,
+};
+
 /**
  * Read-only Calendar Event cached locally in SQLite (`calendar_events` table).
  * Populated from multiple `.ics` feeds (Google Calendar, Apple iCloud, Outlook, etc.).
@@ -126,6 +140,8 @@ export interface LocalTask {
   assigned_week_start: string | null;
   /** Whether this task belongs to the persistent "Long-Term Tasks" sidebar section */
   is_long_term: boolean;
+  /** Immutable ID of the sidebar task list bucket (`'weekly'`, `'long_term'`, or `'bucket_<8hex>'`) */
+  bucket_id?: string;
   /** Optional HH:mm start time */
   start_time: string | null;
   /** Optional HH:mm end time */
@@ -257,6 +273,8 @@ export interface GithubSyncStatusPayload {
   message: string | null;
 }
 
+import type { SyncedPreferences } from "../../shared/timeFormat";
+
 export interface PlannerBackupPayload {
   schema_version: number;
   exported_at: string;
@@ -264,6 +282,9 @@ export interface PlannerBackupPayload {
   week_images: WeekImage[];
   local_events?: LocalEvent[];
   note_pages?: NotePage[];
+  bucket_definitions?: BucketDefinition[];
+  bucket_layouts?: BucketLayoutSnapshot[];
+  preferences?: SyncedPreferences;
   /** Legacy compatibility alias if reading an older payload */
   local_tasks?: LocalTask[];
 }
@@ -286,6 +307,7 @@ export interface CreateLocalTaskInput {
   assigned_date?: string | null;
   assigned_week_start?: string | null;
   is_long_term?: boolean;
+  bucket_id?: string;
   start_time?: string | null;
   end_time?: string | null;
   show_in_weekly: boolean;
@@ -298,6 +320,7 @@ export interface UpdateLocalTaskInput {
   assigned_date?: string | null;
   assigned_week_start?: string | null;
   is_long_term?: boolean;
+  bucket_id?: string;
   start_time?: string | null;
   end_time?: string | null;
   is_completed?: boolean;

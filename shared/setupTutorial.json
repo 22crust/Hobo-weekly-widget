@@ -53,7 +53,11 @@
         "Most image types and gifs are supported as stickers. yay!",
         "Stickers pasted using an image URL will be shared between synced desktop widgets.",
         "Stickers dragged and dropped from your local files will only show up on the device they were placed from.",
-        "Mobile version doesn't support stickers."
+        "Mobile version doesn't support stickers.",
+        "You can drag tasks to and from any category.",
+        "Use the < > arrows to move weekly tasks back/forward 1 week.",
+        "Right click to add and delete note pages",
+        "Drag to rearrange boundaries wherever you see a double arrow cursor, and double click the boundary to return it to center."
       ]
     }
   ]

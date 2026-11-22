@@ -1,8 +1,4 @@
 import {
-  addDays,
-  addMonths,
-  addWeeks,
-  addYears,
   format,
   parseISO,
   startOfWeek,
@@ -10,17 +6,28 @@ import {
 } from "date-fns";
 import {
   AppSettings,
+  BucketDefinition,
+  BucketLayoutSnapshot,
+  BucketScope,
   CreateLocalEventInput,
   CreateLocalTaskInput,
   GoogleEvent,
   LocalEvent,
   LocalTask,
   NotePage,
-  RepeatType,
-  RepeatUnit,
   UpdateLocalEventInput,
   UpdateLocalTaskInput,
 } from "../types/planner";
+import {
+  getDefaultBucketDefinitions,
+  isBucketDefinitionActive,
+} from "../../../shared/buckets";
+import {
+  expandLocalEventsInRange,
+  getEffectiveTimestamp,
+  isRecordActive,
+  resolveSoftDeleteWinner,
+} from "../../../shared/plannerCore";
 import { DEFAULT_ACCENT_COLOR, normalizeHexColor } from "../utils/accentColor";
 import { generateUuid } from "../utils/id";
 import {
@@ -88,31 +95,6 @@ export async function saveAppSettings(
   return next;
 }
 
-function isRecordActive(item: {
-  updated_at: string;
-  deleted_at?: string | null;
-}): boolean {
-  return !item.deleted_at || item.updated_at > item.deleted_at;
-}
-
-function getEffectiveTimestamp(item: {
-  updated_at?: string | null;
-  deleted_at?: string | null;
-}): string {
-  const upd = item.updated_at || "";
-  const del = item.deleted_at || "";
-  return del > upd ? del : upd;
-}
-
-function resolveSoftDeleteWinner<
-  T extends { updated_at: string; deleted_at?: string | null }
->(item: T): T {
-  if (item.deleted_at && item.updated_at > item.deleted_at) {
-    return { ...item, deleted_at: null };
-  }
-  return item;
-}
-
 function getMondayWeekStart(dateStr: string): string {
   const d = parseISO(dateStr);
   return format(startOfWeek(d, { weekStartsOn: 1 }), "yyyy-MM-dd");
@@ -131,6 +113,12 @@ export async function getAllLocalTasks(): Promise<LocalTask[]> {
   return tasks.map((t) => ({
     ...t,
     sync_id: t.sync_id || String(t.id),
+    bucket_id:
+      t.bucket_id && t.bucket_id.trim() !== ""
+        ? t.bucket_id.trim()
+        : t.is_long_term
+        ? "long_term"
+        : "weekly",
     deleted_at: t.deleted_at ?? null,
   }));
 }
@@ -201,6 +189,14 @@ export async function createLocalTask(
   const all = await getAllLocalTasks();
   const maxOrder = all.reduce((max, t) => Math.max(max, t.sort_order || 0), 0);
 
+  const isLongTerm = Boolean(input.is_long_term);
+  const bucketId =
+    input.bucket_id && input.bucket_id.trim() !== ""
+      ? input.bucket_id.trim()
+      : isLongTerm
+      ? "long_term"
+      : "weekly";
+
   const task: LocalTask = {
     id: nextNumericId(),
     sync_id: generateUuid(),
@@ -208,7 +204,8 @@ export async function createLocalTask(
     notes: input.notes ?? null,
     assigned_date: assignedDate,
     assigned_week_start: assignedWeekStart,
-    is_long_term: Boolean(input.is_long_term),
+    is_long_term: isLongTerm,
+    bucket_id: bucketId,
     start_time: input.start_time ?? null,
     end_time: input.end_time ?? null,
     is_completed: false,
@@ -301,76 +298,68 @@ export async function clearCompletedLongTermSidebarTasks(): Promise<void> {
   notifyDatabaseUpdated("local_tasks:clear_completed");
 }
 
+export async function clearCompletedSidebarTasksForBucket(
+  bucketId: string,
+  scope: BucketScope,
+  weekStart: string
+): Promise<void> {
+  const all = await getAllLocalTasks();
+  const nowIso = new Date().toISOString();
+  for (const t of all) {
+    const tBucket =
+      t.bucket_id || (t.is_long_term ? "long_term" : "weekly");
+    if (
+      isRecordActive(t) &&
+      t.show_in_sidebar &&
+      t.is_completed &&
+      tBucket === bucketId &&
+      (scope === "persistent" || t.assigned_week_start === weekStart)
+    ) {
+      await putInStore("tasks", {
+        ...t,
+        deleted_at: nowIso,
+        updated_at: nowIso,
+      });
+    }
+  }
+  notifyDatabaseUpdated("local_tasks:clear_completed");
+}
+
+// ==========================================
+// Bucket Definitions & Layouts
+// ==========================================
+
+export async function getAllBucketDefinitionsForBackup(): Promise<
+  BucketDefinition[]
+> {
+  const all = await getAllFromStore<BucketDefinition>("bucket_definitions");
+  if (all.length === 0) {
+    const defaults = getDefaultBucketDefinitions();
+    for (const def of defaults) {
+      await putInStore("bucket_definitions", def);
+    }
+    return defaults;
+  }
+  return all.sort((a, b) => a.created_at.localeCompare(b.created_at));
+}
+
+export async function getActiveBucketDefinitions(): Promise<
+  BucketDefinition[]
+> {
+  const all = await getAllBucketDefinitionsForBackup();
+  return all.filter(isBucketDefinitionActive);
+}
+
+export async function getAllBucketLayouts(): Promise<BucketLayoutSnapshot[]> {
+  const all = await getAllFromStore<BucketLayoutSnapshot>("bucket_layouts");
+  return all.sort((a, b) =>
+    a.effective_from_week.localeCompare(b.effective_from_week)
+  );
+}
+
 // ==========================================
 // Local Events + Repeating Expansion
 // ==========================================
-
-function deterministicNegativeId(key: string): number {
-  let hash = 0;
-  for (let i = 0; i < key.length; i++) {
-    hash = (hash * 31 + key.charCodeAt(i)) | 0;
-  }
-  return -(Math.abs(hash) || 1);
-}
-
-function buildOccurrenceIso(dateStr: string, hhmm: string): string {
-  const [y, m, d] = dateStr.split("-").map(Number);
-  const [hh, mm] = hhmm.split(":").map(Number);
-  return new Date(y, (m || 1) - 1, d || 1, hh || 0, mm || 0, 0).toISOString();
-}
-
-function computeOccurrenceDate(
-  startObj: Date,
-  stepIndex: number,
-  repeatType: RepeatType | null,
-  interval: number,
-  repeatUnit: RepeatUnit | null
-): Date {
-  if (stepIndex === 0) return startObj;
-  if (repeatType === "monthly") return addMonths(startObj, stepIndex);
-  if (repeatType === "annual") return addYears(startObj, stepIndex);
-  if (repeatUnit === "weeks") return addWeeks(startObj, stepIndex * interval);
-  if (repeatUnit === "months") return addMonths(startObj, stepIndex * interval);
-  return addDays(startObj, stepIndex * interval);
-}
-
-function toCalendarEventOccurrence(
-  ev: LocalEvent,
-  occurrenceDate: string
-): GoogleEvent {
-  const instanceKey = `local::${ev.id}::${occurrenceDate}`;
-  const startIso = ev.is_all_day
-    ? `${occurrenceDate}T00:00:00`
-    : buildOccurrenceIso(occurrenceDate, ev.start_time || "09:00");
-  const endIso = ev.is_all_day
-    ? `${occurrenceDate}T23:59:59`
-    : buildOccurrenceIso(occurrenceDate, ev.end_time || "10:00");
-
-  return {
-    id: deterministicNegativeId(instanceKey),
-    instance_key: instanceKey,
-    uid: ev.id,
-    source_url: "local",
-    calendar_name: "Local",
-    title: ev.title,
-    description: null,
-    location: ev.location,
-    start_time: startIso,
-    end_time: endIso,
-    event_date: occurrenceDate,
-    is_all_day: ev.is_all_day,
-    is_hidden: ev.hidden_dates.includes(occurrenceDate),
-    last_synced: ev.updated_at,
-    is_local: true,
-    local_event_id: ev.id,
-    is_repeating: ev.is_repeating,
-    repeat_type: ev.repeat_type,
-    repeat_interval: ev.repeat_interval,
-    repeat_unit: ev.repeat_unit,
-    local_start_hhmm: ev.start_time,
-    local_end_hhmm: ev.end_time,
-  };
-}
 
 export async function getAllLocalEventsForBackup(): Promise<LocalEvent[]> {
   const all = await getAllFromStore<LocalEvent>("local_events");
@@ -387,49 +376,7 @@ export async function getExpandedLocalEventsInRange(
   rangeEnd: string
 ): Promise<GoogleEvent[]> {
   const all = await getAllLocalEventsForBackup();
-  const occurrences: GoogleEvent[] = [];
-
-  for (const ev of all) {
-    if (!isRecordActive(ev)) continue;
-    if (ev.event_date > rangeEnd) continue;
-    if (!ev.is_repeating && ev.event_date < rangeStart) continue;
-    if (ev.repeat_end_date && ev.repeat_end_date < rangeStart) continue;
-
-    const excludedSet = new Set(ev.excluded_dates);
-    if (!ev.is_repeating) {
-      if (
-        ev.event_date >= rangeStart &&
-        ev.event_date <= rangeEnd &&
-        !excludedSet.has(ev.event_date)
-      ) {
-        occurrences.push(toCalendarEventOccurrence(ev, ev.event_date));
-      }
-      continue;
-    }
-
-    const effectiveEnd =
-      ev.repeat_end_date && ev.repeat_end_date < rangeEnd
-        ? ev.repeat_end_date
-        : rangeEnd;
-
-    const startObj = parseISO(ev.event_date);
-    for (let step = 0; step < 5000; step++) {
-      const occDate = computeOccurrenceDate(
-        startObj,
-        step,
-        ev.repeat_type,
-        Math.max(1, ev.repeat_interval || 1),
-        ev.repeat_unit
-      );
-      const occDateStr = format(occDate, "yyyy-MM-dd");
-      if (occDateStr > effectiveEnd) break;
-      if (occDateStr >= rangeStart && !excludedSet.has(occDateStr)) {
-        occurrences.push(toCalendarEventOccurrence(ev, occDateStr));
-      }
-    }
-  }
-
-  return occurrences;
+  return expandLocalEventsInRange(all, rangeStart, rangeEnd);
 }
 
 export async function createLocalEvent(
@@ -892,7 +839,9 @@ export async function purgeAllSoftDeletedRecordsNow(): Promise<{
 export async function upsertRemoteBackupIntoLocal(
   remoteTasks: LocalTask[],
   remoteLocalEvents: LocalEvent[] = [],
-  remoteNotePages: NotePage[] = []
+  remoteNotePages: NotePage[] = [],
+  remoteBucketDefs: BucketDefinition[] = [],
+  remoteBucketLayouts: BucketLayoutSnapshot[] = []
 ): Promise<number> {
   let upserted = 0;
 
@@ -905,6 +854,12 @@ export async function upsertRemoteBackupIntoLocal(
     const rt = resolveSoftDeleteWinner({
       ...rawRt,
       sync_id: syncId,
+      bucket_id:
+        rawRt.bucket_id && rawRt.bucket_id.trim() !== ""
+          ? rawRt.bucket_id.trim()
+          : rawRt.is_long_term
+          ? "long_term"
+          : "weekly",
       updated_at:
         rawRt.updated_at || rawRt.created_at || "1970-01-01T00:00:00.000Z",
       deleted_at: rawRt.deleted_at ?? null,
@@ -1000,6 +955,67 @@ export async function upsertRemoteBackupIntoLocal(
     }
   }
 
+  const localBucketDefs = await getAllBucketDefinitionsForBackup();
+  const localBucketDefMap = new Map<string, BucketDefinition>();
+  for (const bd of localBucketDefs) localBucketDefMap.set(bd.id, bd);
+
+  for (const rawBd of remoteBucketDefs) {
+    if (!rawBd.id) continue;
+    const bd = resolveSoftDeleteWinner({
+      ...rawBd,
+      scope:
+        rawBd.scope === "persistent"
+          ? ("persistent" as const)
+          : ("weekly" as const),
+      created_at:
+        rawBd.created_at || rawBd.updated_at || "1970-01-01T00:00:00.000Z",
+      updated_at:
+        rawBd.updated_at || rawBd.created_at || "1970-01-01T00:00:00.000Z",
+      deleted_at: rawBd.deleted_at ?? null,
+    });
+    const existing = localBucketDefMap.get(bd.id);
+    if (!existing) {
+      await putInStore("bucket_definitions", bd);
+      upserted++;
+    } else if (getEffectiveTimestamp(bd) > getEffectiveTimestamp(existing)) {
+      const newestUpdated =
+        bd.updated_at > existing.updated_at ? bd.updated_at : existing.updated_at;
+      const candDeleted =
+        (bd.deleted_at || "") > (existing.deleted_at || "")
+          ? bd.deleted_at
+          : existing.deleted_at;
+      const winningDeleted =
+        candDeleted && candDeleted >= newestUpdated ? candDeleted : null;
+      await putInStore("bucket_definitions", {
+        ...bd,
+        updated_at: newestUpdated,
+        deleted_at: winningDeleted,
+      });
+      upserted++;
+    }
+  }
+
+  const localBucketLayouts = await getAllBucketLayouts();
+  const localLayoutMap = new Map<string, BucketLayoutSnapshot>();
+  for (const bl of localBucketLayouts) {
+    localLayoutMap.set(bl.effective_from_week, bl);
+  }
+
+  for (const rawBl of remoteBucketLayouts) {
+    if (!rawBl.effective_from_week) continue;
+    const existing = localLayoutMap.get(rawBl.effective_from_week);
+    const remoteUpdated = rawBl.updated_at || "1970-01-01T00:00:00.000Z";
+    if (!existing || remoteUpdated > existing.updated_at) {
+      await putInStore("bucket_layouts", {
+        effective_from_week: rawBl.effective_from_week,
+        buckets: Array.isArray(rawBl.buckets) ? rawBl.buckets : [],
+        is_explicit_override: Boolean(rawBl.is_explicit_override),
+        updated_at: remoteUpdated,
+      });
+      upserted++;
+    }
+  }
+
   if (upserted > 0) notifyDatabaseUpdated("github_sync:pull_upsert");
   return upserted;
 }
@@ -1007,7 +1023,9 @@ export async function upsertRemoteBackupIntoLocal(
 export async function replaceAllLocalDataWithRemote(
   remoteTasks: LocalTask[],
   remoteLocalEvents: LocalEvent[] = [],
-  remoteNotePages: NotePage[] = []
+  remoteNotePages: NotePage[] = [],
+  remoteBucketDefs: BucketDefinition[] = [],
+  remoteBucketLayouts: BucketLayoutSnapshot[] = []
 ): Promise<void> {
   await replaceStoreContents(
     "tasks",
@@ -1015,6 +1033,12 @@ export async function replaceAllLocalDataWithRemote(
       resolveSoftDeleteWinner({
         ...t,
         sync_id: t.sync_id?.trim() || String(t.id),
+        bucket_id:
+          t.bucket_id && t.bucket_id.trim() !== ""
+            ? t.bucket_id.trim()
+            : t.is_long_term
+            ? "long_term"
+            : "weekly",
         deleted_at: t.deleted_at ?? null,
       })
     )
@@ -1034,6 +1058,33 @@ export async function replaceAllLocalDataWithRemote(
       .map((n) =>
         resolveSoftDeleteWinner({ ...n, deleted_at: n.deleted_at ?? null })
       )
+  );
+  await replaceStoreContents(
+    "bucket_definitions",
+    remoteBucketDefs
+      .filter((b) => Boolean(b.id))
+      .map((b) =>
+        resolveSoftDeleteWinner({
+          ...b,
+          scope:
+            b.scope === "persistent"
+              ? ("persistent" as const)
+              : ("weekly" as const),
+          deleted_at: b.deleted_at ?? null,
+        })
+      )
+  );
+  await getAllBucketDefinitionsForBackup();
+  await replaceStoreContents(
+    "bucket_layouts",
+    remoteBucketLayouts
+      .filter((bl) => Boolean(bl.effective_from_week))
+      .map((bl) => ({
+        effective_from_week: bl.effective_from_week,
+        buckets: Array.isArray(bl.buckets) ? bl.buckets : [],
+        is_explicit_override: Boolean(bl.is_explicit_override),
+        updated_at: bl.updated_at || new Date().toISOString(),
+      }))
   );
   notifyDatabaseUpdated("github_sync:replace_all");
 }
