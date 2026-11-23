@@ -306,6 +306,45 @@ fn get_migrations() -> Vec<Migration> {
             ",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 16,
+            description: "add_calendar_tools_tables",
+            sql: "
+                CREATE TABLE IF NOT EXISTS mood_entries (
+                    date TEXT PRIMARY KEY NOT NULL,
+                    color_key TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    deleted_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS date_counters (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    title TEXT NOT NULL,
+                    target_date TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    deleted_at TEXT
+                );
+            ",
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 17,
+            description: "add_bucket_kind_and_text_entries",
+            sql: "
+                ALTER TABLE bucket_definitions ADD COLUMN kind TEXT NOT NULL DEFAULT 'tasks';
+
+                CREATE TABLE IF NOT EXISTS bucket_text_entries (
+                    bucket_id TEXT NOT NULL,
+                    week_start TEXT NOT NULL,
+                    content TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL,
+                    deleted_at TEXT,
+                    PRIMARY KEY (bucket_id, week_start)
+                );
+            ",
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

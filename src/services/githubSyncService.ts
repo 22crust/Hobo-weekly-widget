@@ -9,16 +9,27 @@ import {
   getAllLocalTasks,
   purgeAllSoftDeletedRecordsNow,
   purgeExpiredSoftDeletedRecords,
+} from "../db/localTasksRepo";
+import {
   replaceAllLocalDataWithRemote,
   upsertRemoteBackupIntoLocal,
-} from "../db/localTasksRepo";
+} from "../db/backupSyncRepo";
 import { getAllWeekImages } from "../db/weekImagesRepo";
 import { getAllLocalEventsForBackup } from "../db/localEventsRepo";
 import { getAllNotePagesForBackup } from "../db/notePagesRepo";
 import {
   getAllBucketDefinitionsForBackup,
   getAllBucketLayouts,
+  getAllBucketTextEntriesForBackup,
+  replaceAllBucketTextEntriesWithRemote,
+  upsertRemoteBucketTextEntriesIntoLocal,
 } from "../db/bucketsRepo";
+import {
+  getAllDateCountersForBackup,
+  getAllMoodEntriesForBackup,
+  replaceAllCalendarToolsWithRemote,
+  upsertRemoteCalendarToolsIntoLocal,
+} from "../db/calendarToolsRepo";
 import { getAllCachedCalendarEvents } from "../db/googleEventsRepo";
 import {
   AppSettings,
@@ -74,15 +85,27 @@ export function extractRemoteTasks(
  * Strictly excludes `google_events` and `app_settings`.
  */
 export async function buildLocalBackupPayload(): Promise<PlannerBackupPayload> {
-  const [tasks, images, localEvents, notePages, bucketDefs, bucketLayouts] =
-    await Promise.all([
-      getAllLocalTasks(),
-      getAllWeekImages(),
-      getAllLocalEventsForBackup(),
-      getAllNotePagesForBackup(),
-      getAllBucketDefinitionsForBackup(),
-      getAllBucketLayouts(),
-    ]);
+  const [
+    tasks,
+    images,
+    localEvents,
+    notePages,
+    bucketDefs,
+    bucketLayouts,
+    bucketTextEntries,
+    moodEntries,
+    dateCounters,
+  ] = await Promise.all([
+    getAllLocalTasks(),
+    getAllWeekImages(),
+    getAllLocalEventsForBackup(),
+    getAllNotePagesForBackup(),
+    getAllBucketDefinitionsForBackup(),
+    getAllBucketLayouts(),
+    getAllBucketTextEntriesForBackup(),
+    getAllMoodEntriesForBackup(),
+    getAllDateCountersForBackup(),
+  ]);
 
   return {
     schema_version: CURRENT_SCHEMA_VERSION,
@@ -93,6 +116,9 @@ export async function buildLocalBackupPayload(): Promise<PlannerBackupPayload> {
     note_pages: notePages,
     bucket_definitions: bucketDefs,
     bucket_layouts: bucketLayouts,
+    bucket_text_entries: bucketTextEntries,
+    mood_entries: moodEntries,
+    date_counters: dateCounters,
     preferences: getSyncedPreferencesForBackup(),
   };
 }
@@ -160,6 +186,13 @@ export async function pushLocalDataToGithubNow(
       merged.bucket_definitions ?? [],
       merged.bucket_layouts ?? []
     );
+    await upsertRemoteCalendarToolsIntoLocal(
+      merged.mood_entries ?? [],
+      merged.date_counters ?? []
+    );
+    await upsertRemoteBucketTextEntriesIntoLocal(
+      merged.bucket_text_entries ?? []
+    );
   }
   void pushCalendarCacheToGithub();
   const activeTasksCount = (merged?.tasks ?? payload.tasks).filter(
@@ -226,6 +259,13 @@ export async function pullAndMergeFromGithub(
           pullResult.payload.note_pages ?? [],
           pullResult.payload.bucket_definitions ?? [],
           pullResult.payload.bucket_layouts ?? []
+        );
+        await upsertRemoteCalendarToolsIntoLocal(
+          pullResult.payload.mood_entries ?? [],
+          pullResult.payload.date_counters ?? []
+        );
+        await upsertRemoteBucketTextEntriesIntoLocal(
+          pullResult.payload.bucket_text_entries ?? []
         );
       }
     } catch (err) {
@@ -343,6 +383,13 @@ export async function resolveInitialGithubMigration(
       remoteBucketDefs,
       remoteBucketLayouts
     );
+    await replaceAllCalendarToolsWithRemote(
+      remotePayload.mood_entries ?? [],
+      remotePayload.date_counters ?? []
+    );
+    await replaceAllBucketTextEntriesWithRemote(
+      remotePayload.bucket_text_entries ?? []
+    );
     const count = await pushLocalDataToGithubNow(true);
     return `Loaded ${count} task${count === 1 ? "" : "s"} from GitHub backup.`;
   }
@@ -356,6 +403,13 @@ export async function resolveInitialGithubMigration(
     remoteNotePages,
     remoteBucketDefs,
     remoteBucketLayouts
+  );
+  await upsertRemoteCalendarToolsIntoLocal(
+    remotePayload.mood_entries ?? [],
+    remotePayload.date_counters ?? []
+  );
+  await upsertRemoteBucketTextEntriesIntoLocal(
+    remotePayload.bucket_text_entries ?? []
   );
   const totalMerged = await pushLocalDataToGithubNow(false);
   return `Merged and backed up ${totalMerged} task${totalMerged === 1 ? "" : "s"} with GitHub.`;

@@ -41,6 +41,21 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
+      - name: Load release notes
+        id: release_notes
+        shell: bash
+        run: |
+          if [ -s RELEASE_NOTES.md ]; then
+            {
+              echo "body<<EOF_RELEASE_NOTES"
+              cat RELEASE_NOTES.md
+              echo ""
+              echo "EOF_RELEASE_NOTES"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "body=Download and run the installer, or update directly from inside Hobo weekly." >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build & publish signed Tauri release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -50,7 +65,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "Hobo weekly v__VERSION__"
-          releaseBody: "Download and run the installer, or update directly from inside Hobo weekly."
+          releaseBody: ${{ steps.release_notes.outputs.body }}
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

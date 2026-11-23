@@ -2,6 +2,7 @@ import { getSyncedPreferencesForBackup, applyRemotePreferences } from "../../../
 import {
   getAllBucketDefinitionsForBackup,
   getAllBucketLayouts,
+  getAllBucketTextEntriesForBackup,
   getAllLocalEventsForBackup,
   getAllLocalTasks,
   getAllNotePagesForBackup,
@@ -18,6 +19,7 @@ import {
   AppSettings,
   BucketDefinition,
   BucketLayoutSnapshot,
+  BucketTextEntry,
   CalendarCachePayload,
   GithubRemoteCheckResult,
   GithubSyncStatusPayload,
@@ -166,6 +168,15 @@ function parseBackupPayloadForgiving(rawJson: string): PlannerBackupPayload {
       bucket_layouts: Array.isArray(parsed.bucket_layouts)
         ? parsed.bucket_layouts
         : [],
+      bucket_text_entries: Array.isArray(parsed.bucket_text_entries)
+        ? parsed.bucket_text_entries
+        : [],
+      mood_entries: Array.isArray(parsed.mood_entries)
+        ? parsed.mood_entries
+        : [],
+      date_counters: Array.isArray(parsed.date_counters)
+        ? parsed.date_counters
+        : [],
       preferences: parsed.preferences,
     };
   } catch {
@@ -258,6 +269,28 @@ function mergePayloads(
     }
   }
 
+  const bucketTextMap = new Map<string, BucketTextEntry>();
+  for (const bt of local.bucket_text_entries ?? []) {
+    if (!bt.bucket_id || !bt.week_start) continue;
+    bucketTextMap.set(`${bt.bucket_id}::${bt.week_start}`, bt);
+  }
+  for (const rbt of remote?.bucket_text_entries ?? []) {
+    if (!rbt.bucket_id || !rbt.week_start) continue;
+    const key = `${rbt.bucket_id}::${rbt.week_start}`;
+    const ex = bucketTextMap.get(key);
+    const rts = rbt.deleted_at && rbt.deleted_at >= (rbt.updated_at || "")
+      ? rbt.deleted_at
+      : rbt.updated_at || "";
+    const lts = ex
+      ? ex.deleted_at && ex.deleted_at >= (ex.updated_at || "")
+        ? ex.deleted_at
+        : ex.updated_at || ""
+      : "";
+    if (!ex || rts > lts) {
+      bucketTextMap.set(key, rbt);
+    }
+  }
+
   // Always preserve desktop week_images from remote so mobile never wipes stickers
   const weekImages =
     remote && Array.isArray(remote.week_images)
@@ -267,11 +300,32 @@ function mergePayloads(
   const lp = local.preferences;
   const rp = remote?.preferences;
   const mergedPreferences =
-    lp && rp
-      ? (rp.updated_at || "") > (lp.updated_at || "")
-        ? rp
-        : lp
-      : lp || rp;
+    lp || rp
+      ? {
+          ...((rp?.updated_at || "") > (lp?.updated_at || "")
+            ? { time_format: rp?.time_format, updated_at: rp?.updated_at }
+            : { time_format: lp?.time_format, updated_at: lp?.updated_at }),
+          ...((rp?.calendar_tools_updated_at || "") >
+          (lp?.calendar_tools_updated_at || "")
+            ? {
+                calendar_tools: rp?.calendar_tools,
+                calendar_tools_updated_at: rp?.calendar_tools_updated_at,
+              }
+            : {
+                calendar_tools: lp?.calendar_tools,
+                calendar_tools_updated_at: lp?.calendar_tools_updated_at,
+              }),
+        }
+      : undefined;
+
+  const moodEntries =
+    Array.isArray(remote?.mood_entries) && remote.mood_entries.length > 0
+      ? remote.mood_entries
+      : local.mood_entries ?? [];
+  const dateCounters =
+    Array.isArray(remote?.date_counters) && remote.date_counters.length > 0
+      ? remote.date_counters
+      : local.date_counters ?? [];
 
   return {
     schema_version: CURRENT_SCHEMA_VERSION,
@@ -292,6 +346,13 @@ function mergePayloads(
     bucket_layouts: Array.from(bucketLayoutMap.values()).sort((a, b) =>
       a.effective_from_week.localeCompare(b.effective_from_week)
     ),
+    bucket_text_entries: Array.from(bucketTextMap.values()).sort((a, b) =>
+      `${a.week_start}::${a.bucket_id}`.localeCompare(
+        `${b.week_start}::${b.bucket_id}`
+      )
+    ),
+    mood_entries: moodEntries,
+    date_counters: dateCounters,
     preferences: mergedPreferences,
   };
 }
@@ -316,6 +377,11 @@ function payloadDataEquals(
       ),
       bucket_layouts: [...(p.bucket_layouts ?? [])].sort((x, y) =>
         x.effective_from_week.localeCompare(y.effective_from_week)
+      ),
+      bucket_text_entries: [...(p.bucket_text_entries ?? [])].sort((x, y) =>
+        `${x.week_start}::${x.bucket_id}`.localeCompare(
+          `${y.week_start}::${y.bucket_id}`
+        )
       ),
       preferences: p.preferences ?? null,
     });
@@ -441,14 +507,20 @@ export async function buildLocalBackupPayload(): Promise<PlannerBackupPayload> {
     notePages,
     bucketDefs,
     bucketLayouts,
+    bucketTextEntries,
     preservedImages,
+    preservedMoods,
+    preservedCounters,
   ] = await Promise.all([
     getAllLocalTasks(),
     getAllLocalEventsForBackup(),
     getAllNotePagesForBackup(),
     getAllBucketDefinitionsForBackup(),
     getAllBucketLayouts(),
+    getAllBucketTextEntriesForBackup(),
     getMetaValue<unknown[]>("preserved_week_images"),
+    getMetaValue<unknown[]>("preserved_mood_entries"),
+    getMetaValue<unknown[]>("preserved_date_counters"),
   ]);
 
   return {
@@ -460,6 +532,9 @@ export async function buildLocalBackupPayload(): Promise<PlannerBackupPayload> {
     note_pages: notePages,
     bucket_definitions: bucketDefs,
     bucket_layouts: bucketLayouts,
+    bucket_text_entries: bucketTextEntries,
+    mood_entries: Array.isArray(preservedMoods) ? preservedMoods : [],
+    date_counters: Array.isArray(preservedCounters) ? preservedCounters : [],
     preferences: getSyncedPreferencesForBackup(),
   };
 }
@@ -596,7 +671,8 @@ export async function pushLocalDataToGithubNow(
         merged.local_events ?? [],
         merged.note_pages ?? [],
         merged.bucket_definitions ?? [],
-        merged.bucket_layouts ?? []
+        merged.bucket_layouts ?? [],
+        merged.bucket_text_entries ?? []
       );
     }
     emitStatus("synced", null, merged.exported_at);
@@ -675,13 +751,26 @@ export async function pullAndMergeFromGithub(
             remotePayload.week_images
           );
         }
+        if (remotePayload.mood_entries) {
+          await setMetaValue(
+            "preserved_mood_entries",
+            remotePayload.mood_entries
+          );
+        }
+        if (remotePayload.date_counters) {
+          await setMetaValue(
+            "preserved_date_counters",
+            remotePayload.date_counters
+          );
+        }
         applyRemotePreferences(remotePayload.preferences);
         await upsertRemoteBackupIntoLocal(
           extractRemoteTasks(remotePayload),
           remotePayload.local_events ?? [],
           remotePayload.note_pages ?? [],
           remotePayload.bucket_definitions ?? [],
-          remotePayload.bucket_layouts ?? []
+          remotePayload.bucket_layouts ?? [],
+          remotePayload.bucket_text_entries ?? []
         );
         await setMetaValue("cached_planner_etag", res.etag);
       }
@@ -788,6 +877,7 @@ export async function resolveInitialGithubMigration(
   const remoteNotes = remotePayload.note_pages ?? [];
   const remoteBucketDefs = remotePayload.bucket_definitions ?? [];
   const remoteBucketLayouts = remotePayload.bucket_layouts ?? [];
+  const remoteBucketTextEntries = remotePayload.bucket_text_entries ?? [];
 
   if (mode === "keep_remote") {
     applyRemotePreferences(remotePayload.preferences);
@@ -796,7 +886,8 @@ export async function resolveInitialGithubMigration(
       remoteEvents,
       remoteNotes,
       remoteBucketDefs,
-      remoteBucketLayouts
+      remoteBucketLayouts,
+      remoteBucketTextEntries
     );
     const count = await pushLocalDataToGithubNow(true);
     await pullCalendarCache(await getAppSettings());
@@ -809,7 +900,8 @@ export async function resolveInitialGithubMigration(
     remoteEvents,
     remoteNotes,
     remoteBucketDefs,
-    remoteBucketLayouts
+    remoteBucketLayouts,
+    remoteBucketTextEntries
   );
   const totalMerged = await pushLocalDataToGithubNow(false);
   await pullCalendarCache(await getAppSettings());

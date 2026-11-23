@@ -1,10 +1,17 @@
 import { format, parseISO } from "date-fns";
+import {
+  applyRemoteCalendarTools,
+  getSavedCalendarTools,
+  getSavedCalendarToolsUpdatedAt,
+} from "./calendarTools";
 
 export type TimeFormat = "24h" | "12h";
 
 export interface SyncedPreferences {
   time_format?: TimeFormat;
   updated_at?: string;
+  calendar_tools?: string[];
+  calendar_tools_updated_at?: string;
 }
 
 const TIME_FORMAT_KEY = "hobo_time_format_v1";
@@ -56,22 +63,33 @@ export function getSyncedPreferencesForBackup(): SyncedPreferences {
   return {
     time_format: getSavedTimeFormat(),
     updated_at: getSavedTimeFormatUpdatedAt(),
+    calendar_tools: getSavedCalendarTools(),
+    calendar_tools_updated_at: getSavedCalendarToolsUpdatedAt(),
   };
 }
 
 export function applyRemotePreferences(
   remote?: SyncedPreferences | null
 ): boolean {
-  if (!remote || (remote.time_format !== "12h" && remote.time_format !== "24h")) {
-    return false;
+  if (!remote) return false;
+  let changed = false;
+  if (remote.time_format === "12h" || remote.time_format === "24h") {
+    const remoteTs = remote.updated_at || "1970-01-01T00:00:00.000Z";
+    const localTs = getSavedTimeFormatUpdatedAt();
+    if (remoteTs > localTs) {
+      saveTimeFormat(remote.time_format, remoteTs);
+      changed = true;
+    }
   }
-  const remoteTs = remote.updated_at || "1970-01-01T00:00:00.000Z";
-  const localTs = getSavedTimeFormatUpdatedAt();
-  if (remoteTs > localTs) {
-    saveTimeFormat(remote.time_format, remoteTs);
-    return true;
+  if (
+    applyRemoteCalendarTools(
+      remote.calendar_tools,
+      remote.calendar_tools_updated_at
+    )
+  ) {
+    changed = true;
   }
-  return false;
+  return changed;
 }
 
 export function subscribeTimeFormat(

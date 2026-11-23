@@ -4,11 +4,13 @@ import { addDays, format, getISOWeek, parseISO } from "date-fns";
 import { ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
 import {
   BucketDefinition,
+  BucketKind,
   BucketLayoutEntry,
   BucketLayoutSnapshot,
   BucketScope,
   equalizeVisibleRatios,
   findFutureExplicitOverrides,
+  getBucketKind,
   getDefaultBucketDefinitions,
   MAX_VISIBLE_BUCKETS,
   MAX_VISIBLE_BUCKETS_MESSAGE,
@@ -34,6 +36,7 @@ import {
   TaskItem,
 } from "../common/TaskItem";
 import { DayColumn } from "./DayColumn";
+import { BucketTextEditor } from "./BucketTextEditor";
 import { ManageHiddenListsModal } from "./ManageHiddenListsModal";
 import { MiniMonthCalendar } from "./MiniMonthCalendar";
 import { CrispSquareGrid } from "./CrispSquareGrid";
@@ -48,6 +51,7 @@ interface WeekBoardProps {
   longTermSidebarTasks: LocalTask[];
   bucketDefinitions?: BucketDefinition[];
   bucketLayouts?: BucketLayoutSnapshot[];
+  bucketTextByBucketId?: Record<string, string>;
   weekImages: WeekImage[];
   dailyWeatherByDate: Record<string, DailyWeather>;
   currentWeather: CurrentWeatherSummary | null;
@@ -59,8 +63,6 @@ interface WeekBoardProps {
   onHideGoogleEvent: (id: number, event?: GoogleEvent) => void;
   onUnhideAllForDay: (dateStr: string) => void;
   onAddTaskInDay: (title: string, dateStr: string) => void;
-  onAddWeeklySidebarTask: (title: string) => void;
-  onAddLongTermSidebarTask: (title: string) => void;
   onToggleTask: (id: number, isCompleted: boolean) => void;
   onEditTaskTitle: (id: number, newTitle: string) => void;
   onDeleteTask: (id: number) => void;
@@ -69,15 +71,25 @@ interface WeekBoardProps {
   onMoveTaskToLongTermSidebar: (id: number) => void;
   onMigrateTaskToPrevWeek: (id: number) => void;
   onMigrateTaskToNextWeek: (id: number) => void;
-  onClearCompletedWeeklySidebar: () => void;
-  onClearCompletedLongTermSidebar: () => void;
   onAddTaskInBucket?: (bucketId: string, scope: BucketScope, title: string) => void;
   onMoveTaskToBucket?: (taskId: number, bucketId: string, scope: BucketScope) => void;
   onClearCompletedInBucket?: (bucketId: string, scope: BucketScope) => void;
-  onCreateBucket?: (title: string, scope: BucketScope) => Promise<BucketDefinition>;
+  onCreateBucket?: (
+    title: string,
+    scope: BucketScope,
+    kind?: BucketKind
+  ) => Promise<BucketDefinition>;
   onRenameBucket?: (bucketId: string, newTitle: string) => Promise<void> | void;
   onSaveBucketLayouts?: (snapshots: BucketLayoutSnapshot[]) => Promise<void> | void;
-  onCountTasksInBucket?: (bucketId: string) => Promise<number>;
+  onSaveBucketText?: (
+    bucketId: string,
+    weekStart: string,
+    content: string
+  ) => Promise<void> | void;
+  onCountTasksInBucket?: (
+    bucketId: string,
+    kind: BucketKind
+  ) => Promise<number>;
   onDeleteHiddenBucket?: (bucketId: string) => Promise<void> | void;
   onAddWeekImage: (input: CreateWeekImageInput) => void;
   onUpdateWeekImage: (id: string, updates: UpdateWeekImageInput) => void;
@@ -152,6 +164,7 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
   longTermSidebarTasks,
   bucketDefinitions = [],
   bucketLayouts = [],
+  bucketTextByBucketId = {},
   weekImages,
   dailyWeatherByDate,
   currentWeather,
@@ -163,8 +176,6 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
   onHideGoogleEvent,
   onUnhideAllForDay,
   onAddTaskInDay,
-  onAddWeeklySidebarTask,
-  onAddLongTermSidebarTask,
   onToggleTask,
   onEditTaskTitle,
   onDeleteTask,
@@ -173,14 +184,13 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
   onMoveTaskToLongTermSidebar,
   onMigrateTaskToPrevWeek,
   onMigrateTaskToNextWeek,
-  onClearCompletedWeeklySidebar,
-  onClearCompletedLongTermSidebar,
   onAddTaskInBucket,
   onMoveTaskToBucket,
   onClearCompletedInBucket,
   onCreateBucket,
   onRenameBucket,
   onSaveBucketLayouts,
+  onSaveBucketText,
   onCountTasksInBucket,
   onDeleteHiddenBucket,
   onAddWeekImage,
@@ -738,15 +748,22 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
     void commitWeekLayoutChange(normalizeLayoutEntries(next, activeDefs));
   };
 
-  const handleAddNewBucket = async (scope: BucketScope) => {
+  const handleAddNewBucket = async (
+    scope: BucketScope,
+    kind: BucketKind = "tasks"
+  ) => {
     if (visibleEntries.length >= MAX_VISIBLE_BUCKETS) {
       setAlertMessage(MAX_VISIBLE_BUCKETS_MESSAGE);
       return;
     }
     if (!onCreateBucket) return;
     const defaultTitle =
-      scope === "persistent" ? "New Long-Term List" : "New Weekly List";
-    const created = await onCreateBucket(defaultTitle, scope);
+      kind === "text"
+        ? "New Text Section"
+        : scope === "persistent"
+        ? "New Long-Term List"
+        : "New Weekly List";
+    const created = await onCreateBucket(defaultTitle, scope, kind);
     const nextDefs = [...activeDefs, created];
     const nextEntries: BucketLayoutEntry[] = [
       ...effectiveEntries,
@@ -1067,13 +1084,7 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
                         <button
                           type="button"
                           onClick={() => {
-                            if (onClearCompletedInBucket) {
-                              onClearCompletedInBucket(def.id, def.scope);
-                            } else if (def.scope === "persistent") {
-                              onClearCompletedLongTermSidebar();
-                            } else {
-                              onClearCompletedWeeklySidebar();
-                            }
+                            onClearCompletedInBucket?.(def.id, def.scope);
                           }}
                           className="text-[9px] uppercase tracking-[0.1em] text-hobo-muted hover:text-hobo-red bg-transparent border-0 p-0 transition-colors"
                         >
@@ -1082,68 +1093,73 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
                       )}
                     </div>
 
-                    <div className="flex-1 min-h-0 overflow-y-auto space-y-0.5 pr-1 pointer-events-none">
-                      <div className="space-y-0.5 pointer-events-auto">
-                        {bucketTasks.map((task) => (
-                          <TaskItem
-                            key={task.id}
-                            task={task}
-                            onToggleComplete={onToggleTask}
-                            onEditTitle={onEditTaskTitle}
-                            onDelete={onDeleteTask}
-                            onMoveToDate={onMoveTaskToDate}
-                            onMigratePrevWeek={
-                              def.scope === "weekly"
-                                ? onMigrateTaskToPrevWeek
-                                : undefined
-                            }
-                            onMigrateNextWeek={
-                              def.scope === "weekly"
-                                ? onMigrateTaskToNextWeek
-                                : undefined
-                            }
-                            showMigrationArrows={def.scope === "weekly"}
-                          />
-                        ))}
-                      </div>
+                    {getBucketKind(def) === "text" ? (
+                      <BucketTextEditor
+                        bucketId={def.id}
+                        weekStartDate={weekStartDate}
+                        value={bucketTextByBucketId[def.id] ?? ""}
+                        onSave={(bId, wStart, content) =>
+                          onSaveBucketText?.(bId, wStart, content)
+                        }
+                      />
+                    ) : (
+                      <div className="flex-1 min-h-0 overflow-y-auto space-y-0.5 pr-1 pointer-events-none">
+                        <div className="space-y-0.5 pointer-events-auto">
+                          {bucketTasks.map((task) => (
+                            <TaskItem
+                              key={task.id}
+                              task={task}
+                              onToggleComplete={onToggleTask}
+                              onEditTitle={onEditTaskTitle}
+                              onDelete={onDeleteTask}
+                              onMoveToDate={onMoveTaskToDate}
+                              onMigratePrevWeek={
+                                def.scope === "weekly"
+                                  ? onMigrateTaskToPrevWeek
+                                  : undefined
+                              }
+                              onMigrateNextWeek={
+                                def.scope === "weekly"
+                                  ? onMigrateTaskToNextWeek
+                                  : undefined
+                              }
+                              showMigrationArrows={def.scope === "weekly"}
+                            />
+                          ))}
+                        </div>
 
-                      {/* "+" Task prompt directly underneath existing tasks */}
-                      <div className="flex items-center gap-1 py-[1px] pointer-events-auto">
-                        <Plus className="w-2.5 h-2.5 text-hobo-muted shrink-0 stroke-[1.5]" />
-                        <input
-                          type="text"
-                          value={draft}
-                          onChange={(e) =>
-                            setDraftsByBucket((prev) => ({
-                              ...prev,
-                              [def.id]: e.target.value,
-                            }))
-                          }
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" && draft.trim()) {
-                              e.preventDefault();
-                              if (onAddTaskInBucket) {
-                                onAddTaskInBucket(
+                        {/* "+" Task prompt directly underneath existing tasks */}
+                        <div className="flex items-center gap-1 py-[1px] pointer-events-auto">
+                          <Plus className="w-2.5 h-2.5 text-hobo-muted shrink-0 stroke-[1.5]" />
+                          <input
+                            type="text"
+                            value={draft}
+                            onChange={(e) =>
+                              setDraftsByBucket((prev) => ({
+                                ...prev,
+                                [def.id]: e.target.value,
+                              }))
+                            }
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && draft.trim()) {
+                                e.preventDefault();
+                                onAddTaskInBucket?.(
                                   def.id,
                                   def.scope,
                                   draft.trim()
                                 );
-                              } else if (def.scope === "persistent") {
-                                onAddLongTermSidebarTask(draft.trim());
-                              } else {
-                                onAddWeeklySidebarTask(draft.trim());
+                                setDraftsByBucket((prev) => ({
+                                  ...prev,
+                                  [def.id]: "",
+                                }));
                               }
-                              setDraftsByBucket((prev) => ({
-                                ...prev,
-                                [def.id]: "",
-                              }));
-                            }
-                          }}
-                          placeholder=""
-                          className="w-full bg-transparent text-[12px] leading-[16px] text-hobo-ink outline-none border-0 p-0 font-light"
-                        />
+                            }}
+                            placeholder=""
+                            className="w-full bg-transparent text-[12px] leading-[16px] text-hobo-ink outline-none border-0 p-0 font-light"
+                          />
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </div>
                 );
               })}
@@ -1320,6 +1336,16 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
             >
               New long-term list
             </button>
+            <button
+              type="button"
+              onClick={() => {
+                setPageContextMenu(null);
+                void handleAddNewBucket("weekly", "text");
+              }}
+              className="block w-full text-left px-2.5 py-1 whitespace-nowrap text-hobo-ink hover:bg-hobo-paperHover hover:text-hobo-red bg-transparent border-0 transition-colors"
+            >
+              New text section
+            </button>
             <div className="my-0.5 border-t border-hobo-line" />
             <button
               type="button"
@@ -1343,8 +1369,8 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
         onClose={() => setIsManageListsOpen(false)}
         onToggleVisibility={handleToggleBucketVisibilityFromModal}
         onRenameBucket={(id, newTitle) => onRenameBucket?.(id, newTitle)}
-        onCountTasksInBucket={async (id) =>
-          (await onCountTasksInBucket?.(id)) ?? 0
+        onCountTasksInBucket={async (id, kind) =>
+          (await onCountTasksInBucket?.(id, kind)) ?? 0
         }
         onDeleteHiddenBucket={(id) => onDeleteHiddenBucket?.(id)}
       />

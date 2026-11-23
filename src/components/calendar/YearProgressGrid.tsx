@@ -34,7 +34,7 @@ export const YearProgressGrid: React.FC<YearProgressGridProps> = ({
   const percentComplete = Math.round((passedDaysCount / totalDaysCount) * 100);
 
   return (
-    <div className="flex-1 flex flex-col justify-start px-3.5 py-2.5 select-none overflow-hidden pointer-events-none">
+    <div className="shrink-0 flex flex-col justify-start px-3.5 py-2.5 select-none overflow-hidden pointer-events-none">
       {/* Header showing year progress */}
       <div className="relative z-10 flex items-baseline justify-between mb-3">
         <span className="text-[10px] uppercase tracking-[0.14em] text-hobo-muted">

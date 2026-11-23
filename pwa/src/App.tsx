@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { addMonths, addWeeks, format, subMonths, subWeeks } from "date-fns";
+import { useEffect, useRef, useState } from "react";
+import { addMonths, addWeeks, format, startOfWeek, subMonths, subWeeks } from "date-fns";
 import { BottomTabBar, ActiveTab } from "./components/BottomTabBar";
 import { CollapsibleMonthCalendar } from "./components/CollapsibleMonthCalendar";
 import { DayEventsSection } from "./components/DayEventsSection";
@@ -11,6 +11,7 @@ import { MobileWeekBoard } from "./components/MobileWeekBoard";
 import { TopBar } from "./components/TopBar";
 import { saveAppSettings } from "./db/plannerRepo";
 import { useMobilePlannerData } from "./hooks/useMobilePlannerData";
+import { subscribeMidnightRollover } from "../../shared/plannerCore";
 
 const GITHUB_AUTH_DISMISS_KEY = "lp_pwa_gh_auth_dismissed_day";
 
@@ -33,6 +34,30 @@ export function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isAuthPromptOpen, setIsAuthPromptOpen] = useState(false);
 
+  const lastRealWeekRef = useRef<string>(
+    format(startOfWeek(new Date(), { weekStartsOn: 1 }), "yyyy-MM-dd")
+  );
+  const lastRealMonthRef = useRef<string>(format(new Date(), "yyyy-MM"));
+
+  useEffect(() => {
+    return subscribeMidnightRollover(() => {
+      const now = new Date();
+      const nowWeek = format(
+        startOfWeek(now, { weekStartsOn: 1 }),
+        "yyyy-MM-dd"
+      );
+      if (nowWeek !== lastRealWeekRef.current) {
+        lastRealWeekRef.current = nowWeek;
+        setCurrentWeekDate(now);
+      }
+      const nowMonth = format(now, "yyyy-MM");
+      if (nowMonth !== lastRealMonthRef.current) {
+        lastRealMonthRef.current = nowMonth;
+        setCurrentMonthDate(now);
+      }
+    });
+  }, []);
+
   const {
     weekStartDate,
     weekEndDate,
@@ -44,6 +69,7 @@ export function App() {
     longTermSidebarTasks,
     bucketDefinitions,
     bucketLayouts,
+    bucketTextByBucketId,
     settings,
     isRefreshing,
     githubSyncStatus,
@@ -193,6 +219,10 @@ export function App() {
                 longTermTasks={longTermSidebarTasks}
                 bucketDefinitions={bucketDefinitions}
                 bucketLayouts={bucketLayouts}
+                bucketTextByBucketId={bucketTextByBucketId}
+                onSaveBucketText={(bucketId, weekStart, content) =>
+                  void actions.saveBucketText(bucketId, weekStart, content)
+                }
                 onAddTaskInBucket={(bucketId, scope, title) =>
                   void actions.addTask({
                     title,

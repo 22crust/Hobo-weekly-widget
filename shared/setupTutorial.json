@@ -2,7 +2,7 @@
   "title": "Setup Tutorial",
   "sections": [
     {
-      "heading": "Allow widget to start on launch",
+      "heading": "Allow widget to start on launch.",
       "steps": [
         "Look for the Hobonichi icon in the Windows System Tray (^ arrow on bottom right corner of the taskbar)",
         "Right click to enable 'Launch on Startup.'"
@@ -30,7 +30,7 @@
     {
       "heading": "GitHub Backup & Sync - optional if only using one device, but required if you want to use multiple devices",
       "steps": [
-        "Create a github account (free)",
+        "Create a github account (free).",
         "Click + icon in the top right corner to create a new repository.",
         "Name it (e.g. planner-data).",
         "IMPORTANT: select Private.",
@@ -40,24 +40,39 @@
         "Click Developer Settings at the bottom of the left sidebar.",
         "Personal access tokens > Fine-grained tokens > Generate new token",
         "Name the new token (e.g. Planner data) and set an expiration period (or no expiration). You will need to regenerate the token after this period.",
-        "Repository access > Only select repositories > select the private repository you just made.",
-        "Permissions > Repository permissions > select Contents. Change access to Read and write.",
+        "Repository access > Only select repositories > select the repository you just made.",
+        "Permissions > Repository permissions > select Contents. Change access to 'Read and write.'",
         "Click Generate token at the bottom, and copy and paste it into the planner settings of ALL devices you want to sync.",
-        "You'll be able to copy it from the planner settings at any time. If you lose it, you can regenerate the token, so don't worry too much.",
+        "You'll be able to copy it from the planner settings at any time. If you lose it, you can regenerate the token, so don't worry too much about storing it somewhere.",
         "If you want to keep your different devices planners separate (no sync) but still want an online backup, just create new repositories for each device."
       ]
     },
     {
-      "heading": "Other features & tips",
+      "heading": "Stickers",
       "steps": [
         "Most image types and gifs are supported as stickers. yay!",
         "Stickers pasted using an image URL will be shared between synced desktop widgets.",
         "Stickers dragged and dropped from your local files will only show up on the device they were placed from.",
-        "Mobile version doesn't support stickers.",
-        "You can drag tasks to and from any category.",
-        "Use the < > arrows to move weekly tasks back/forward 1 week.",
-        "Right click to add and delete note pages",
-        "Drag to rearrange boundaries wherever you see a double arrow cursor, and double click the boundary to return it to center."
+        "Mobile version doesn't support stickers."
+      ]
+    },
+    {
+      "heading": "Task lists and notes",
+      "steps": [
+        "Tasks can be dragged between sections.",
+        "Use the < > arrows on weekly tasks to bump tasks back/forward 1 week.",
+        "Right click the tasks page to add/hide/rename lists.",
+        "Renaming affects the name of a given list on all pages.",
+        "All other changes (visible lists, position of lists) will only apply on the current page unless you select 'Set default forward,' which will apply the current list layout to all future pages.",
+        "Drag to rearrange boundaries or lists, and double click the boundary to return everything to its default position.",
+        "Right click to add/delete note pages."
+      ]
+    },
+    {
+      "heading": "Suggestions & bug reports",
+      "steps": [
+        "22crust(at)proton.me",
+        "Please try to be as detailed as possible so that I can try to replicate your bug. Otherwise, always open to new feature suggestions."
       ]
     }
   ]

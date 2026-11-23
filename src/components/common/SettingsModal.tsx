@@ -407,14 +407,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           {/* 1. Accent Colour Selector */}
           <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
-              <label className="block text-[10px] uppercase tracking-[0.14em] text-hobo-ink font-normal">
-                ACCENT COLOUR
-              </label>
-              <span className="text-[10px] uppercase tracking-wider text-hobo-muted font-mono">
-                {accentColor.toUpperCase()}
-              </span>
-            </div>
+            <label className="block text-[10px] uppercase tracking-[0.14em] text-hobo-ink font-normal">
+              ACCENT COLOUR
+            </label>
 
             <div className="flex items-center justify-between gap-2 pt-0.5">
               {/* Tasteful Hobonichi-inspired preset swatches */}

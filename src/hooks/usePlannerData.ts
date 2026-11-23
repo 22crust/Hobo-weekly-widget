@@ -20,8 +20,6 @@ import {
   updateLocalEventSingle,
 } from "../db/localEventsRepo";
 import {
-  clearCompletedLongTermSidebarTasks,
-  clearCompletedSidebarTasksForWeek,
   clearCompletedTasksForBucket,
   createLocalTask,
   deleteLocalTask,
@@ -35,12 +33,15 @@ import {
 } from "../db/localTasksRepo";
 import {
   countActiveTasksInBucket,
+  countNonEmptyWeeksInTextBucket,
   createBucketDefinition,
   getActiveBucketDefinitions,
   getAllBucketLayouts,
+  getBucketTextEntriesForWeek,
   permanentlyDeleteHiddenBucket,
   renameBucketDefinition,
   saveBucketLayoutSnapshots,
+  setBucketTextEntry,
 } from "../db/bucketsRepo";
 import {
   createWeekImage,
@@ -59,6 +60,7 @@ import {
   queueDebouncedGithubPush,
   startBackgroundGithubSync,
 } from "../services/githubSyncService";
+import { BucketKind } from "../../shared/buckets";
 import {
   BucketDefinition,
   BucketLayoutSnapshot,
@@ -96,6 +98,9 @@ export function usePlannerData(
   const [longTermSidebarTasks, setLongTermSidebarTasks] = useState<LocalTask[]>([]);
   const [bucketDefinitions, setBucketDefinitions] = useState<BucketDefinition[]>([]);
   const [bucketLayouts, setBucketLayouts] = useState<BucketLayoutSnapshot[]>([]);
+  const [bucketTextByBucketId, setBucketTextByBucketId] = useState<
+    Record<string, string>
+  >({});
   const [weekImages, setWeekImages] = useState<WeekImage[]>([]);
   const [calendarImages, setCalendarImages] = useState<WeekImage[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -125,7 +130,8 @@ export function usePlannerData(
     const isImageOnlyUpdate = Boolean(source?.startsWith("week_images:"));
     const isBucketOnlyUpdate = Boolean(
       source?.startsWith("bucket_definitions:") ||
-        source?.startsWith("bucket_layouts:")
+        source?.startsWith("bucket_layouts:") ||
+        source?.startsWith("bucket_text_entries:")
     );
 
     try {
@@ -155,10 +161,13 @@ export function usePlannerData(
       if (isBucketOnlyUpdate) {
         if (!enableBackgroundSync) return;
         const shouldReloadSidebarTasks = source === "bucket_definitions:delete";
-        const [activeBucketDefs, allBucketLayouts, sidebarTasks] =
+        const [activeBucketDefs, allBucketLayouts, weekTextMap, sidebarTasks] =
           await Promise.all([
             getActiveBucketDefinitions().catch(() => [] as BucketDefinition[]),
             getAllBucketLayouts().catch(() => [] as BucketLayoutSnapshot[]),
+            getBucketTextEntriesForWeek(activeStart).catch(
+              () => ({} as Record<string, string>)
+            ),
             shouldReloadSidebarTasks
               ? getSidebarTasksForWeek(activeStart, activeEnd).catch(
                   () => [] as LocalTask[]
@@ -175,6 +184,7 @@ export function usePlannerData(
         }
         setBucketDefinitions(activeBucketDefs);
         setBucketLayouts(allBucketLayouts);
+        setBucketTextByBucketId(weekTextMap);
         if (sidebarTasks) {
           setWeeklySidebarTasks(sidebarTasks.filter((t) => !t.is_long_term));
           setLongTermSidebarTasks(sidebarTasks.filter((t) => t.is_long_term));
@@ -213,6 +223,7 @@ export function usePlannerData(
         calStickers,
         activeBucketDefs,
         allBucketLayouts,
+        weekTextMap,
       ] = await Promise.all([
         getGoogleEventsInRange(activeStart, activeEnd).catch((err) => {
           console.warn("[usePlannerData] getGoogleEventsInRange fallback:", err);
@@ -250,6 +261,11 @@ export function usePlannerData(
         enableBackgroundSync
           ? getAllBucketLayouts().catch(() => [] as BucketLayoutSnapshot[])
           : Promise.resolve([] as BucketLayoutSnapshot[]),
+        enableBackgroundSync
+          ? getBucketTextEntriesForWeek(activeStart).catch(
+              () => ({} as Record<string, string>)
+            )
+          : Promise.resolve({} as Record<string, string>),
       ]);
 
       const mergedEvents = [...externalEvents, ...localEvents].sort((a, b) => {
@@ -279,6 +295,7 @@ export function usePlannerData(
       if (enableBackgroundSync) {
         setBucketDefinitions(activeBucketDefs);
         setBucketLayouts(allBucketLayouts);
+        setBucketTextByBucketId(weekTextMap);
       }
     } catch (err) {
       console.error("[usePlannerData] Failed to query local SQLite database:", err);
@@ -457,6 +474,7 @@ export function usePlannerData(
     longTermSidebarTasks,
     bucketDefinitions,
     bucketLayouts,
+    bucketTextByBucketId,
     weekImages,
     calendarImages,
     isLoading,
@@ -713,8 +731,12 @@ export function usePlannerData(
         console.error("[usePlannerData] clearCompletedForBucket failed:", e);
       }
     },
-    createBucket: async (title: string, scope: BucketScope) => {
-      return await createBucketDefinition(title, scope);
+    createBucket: async (
+      title: string,
+      scope: BucketScope,
+      kind: BucketKind = "tasks"
+    ) => {
+      return await createBucketDefinition(title, scope, kind);
     },
     renameBucket: async (id: string, newTitle: string) => {
       await renameBucketDefinition(id, newTitle);
@@ -722,7 +744,18 @@ export function usePlannerData(
     saveBucketLayouts: async (snapshots: BucketLayoutSnapshot[]) => {
       await saveBucketLayoutSnapshots(snapshots);
     },
-    countTasksInBucket: async (bucketId: string) => {
+    saveBucketText: async (
+      bucketId: string,
+      weekStart: string,
+      content: string
+    ) => {
+      setBucketTextByBucketId((prev) => ({ ...prev, [bucketId]: content }));
+      await setBucketTextEntry(bucketId, weekStart, content);
+    },
+    countTasksInBucket: async (bucketId: string, kind: BucketKind = "tasks") => {
+      if (kind === "text") {
+        return await countNonEmptyWeeksInTextBucket(bucketId);
+      }
       return await countActiveTasksInBucket(bucketId);
     },
     deleteHiddenBucket: async (bucketId: string) => {
@@ -733,20 +766,6 @@ export function usePlannerData(
         await migrateWeeklyTaskToWeek(id, targetWeekStartDate);
       } catch (e) {
         console.error("[usePlannerData] migrateTaskToWeek failed:", e);
-      }
-    },
-    clearCompletedForWeekSidebar: async (weekStart: string, weekEnd: string) => {
-      try {
-        await clearCompletedSidebarTasksForWeek(weekStart, weekEnd);
-      } catch (e) {
-        console.error("[usePlannerData] clearCompletedForWeekSidebar failed:", e);
-      }
-    },
-    clearCompletedForLongTermSidebar: async () => {
-      try {
-        await clearCompletedLongTermSidebarTasks();
-      } catch (e) {
-        console.error("[usePlannerData] clearCompletedForLongTermSidebar failed:", e);
       }
     },
     removeTask: async (id: number) => {

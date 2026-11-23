@@ -8,6 +8,7 @@ import {
   Settings,
 } from "lucide-react";
 import { GithubSyncStatusPayload } from "../../types/planner";
+import { getGithubStatusDotClass } from "../../../shared/plannerCore";
 
 interface WidgetTitlebarProps {
   title?: string;
@@ -61,18 +62,7 @@ export const WidgetTitlebar: React.FC<WidgetTitlebarProps> = ({
     return "GitHub backup active";
   };
 
-  const getDotColorClass = (status: GithubSyncStatusPayload["status"]) => {
-    switch (status) {
-      case "syncing":
-        return "bg-amber-500 animate-pulse";
-      case "synced":
-        return "bg-emerald-600";
-      case "error":
-        return "bg-hobo-red";
-      default:
-        return "bg-hobo-muted/60";
-    }
-  };
+  const getDotColorClass = getGithubStatusDotClass;
 
   return (
     <div

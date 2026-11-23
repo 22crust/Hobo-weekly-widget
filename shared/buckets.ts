@@ -1,14 +1,20 @@
 import { addDays, format, parseISO } from "date-fns";
 
 export type BucketScope = "weekly" | "persistent";
+export type BucketKind = "tasks" | "text";
 
 export interface BucketDefinition {
   id: string;
   title: string;
   scope: BucketScope;
+  kind?: BucketKind;
   created_at: string;
   updated_at: string;
   deleted_at?: string | null;
+}
+
+export function getBucketKind(def?: Pick<BucketDefinition, "kind"> | null): BucketKind {
+  return def?.kind === "text" ? "text" : "tasks";
 }
 
 export interface BucketLayoutEntry {
@@ -38,6 +44,7 @@ export function getDefaultBucketDefinitions(
       id: BUILTIN_WEEKLY_BUCKET_ID,
       title: "Weekly Tasks",
       scope: "weekly",
+      kind: "tasks",
       created_at: nowIso,
       updated_at: nowIso,
       deleted_at: null,

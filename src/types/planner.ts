@@ -274,6 +274,31 @@ export interface GithubSyncStatusPayload {
 }
 
 import type { SyncedPreferences } from "../../shared/timeFormat";
+import type { MoodColorKey } from "../../shared/calendarTools";
+
+export interface MoodEntry {
+  date: string; // YYYY-MM-DD
+  color_key: MoodColorKey;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+export interface DateCounter {
+  id: string;
+  title: string;
+  target_date: string; // YYYY-MM-DD
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+export interface BucketTextEntry {
+  bucket_id: string;
+  week_start: string; // YYYY-MM-DD
+  content: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
 
 export interface PlannerBackupPayload {
   schema_version: number;
@@ -284,6 +309,9 @@ export interface PlannerBackupPayload {
   note_pages?: NotePage[];
   bucket_definitions?: BucketDefinition[];
   bucket_layouts?: BucketLayoutSnapshot[];
+  bucket_text_entries?: BucketTextEntry[];
+  mood_entries?: MoodEntry[];
+  date_counters?: DateCounter[];
   preferences?: SyncedPreferences;
   /** Legacy compatibility alias if reading an older payload */
   local_tasks?: LocalTask[];

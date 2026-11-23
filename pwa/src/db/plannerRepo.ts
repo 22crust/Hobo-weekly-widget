@@ -9,6 +9,7 @@ import {
   BucketDefinition,
   BucketLayoutSnapshot,
   BucketScope,
+  BucketTextEntry,
   CreateLocalEventInput,
   CreateLocalTaskInput,
   GoogleEvent,
@@ -355,6 +356,64 @@ export async function getAllBucketLayouts(): Promise<BucketLayoutSnapshot[]> {
   return all.sort((a, b) =>
     a.effective_from_week.localeCompare(b.effective_from_week)
   );
+}
+
+interface StoredBucketTextEntry extends BucketTextEntry {
+  id: string;
+}
+
+export async function getAllBucketTextEntriesForBackup(): Promise<
+  BucketTextEntry[]
+> {
+  const all = await getAllFromStore<StoredBucketTextEntry>(
+    "bucket_text_entries"
+  );
+  return all
+    .map((r) =>
+      resolveSoftDeleteWinner({
+        bucket_id: r.bucket_id,
+        week_start: r.week_start,
+        content: r.content ?? "",
+        updated_at: r.updated_at,
+        deleted_at: r.deleted_at ?? null,
+      })
+    )
+    .sort((a, b) =>
+      `${a.week_start}::${a.bucket_id}`.localeCompare(
+        `${b.week_start}::${b.bucket_id}`
+      )
+    );
+}
+
+export async function getBucketTextEntriesForWeek(
+  weekStart: string
+): Promise<Record<string, string>> {
+  const all = await getAllBucketTextEntriesForBackup();
+  const map: Record<string, string> = {};
+  for (const r of all) {
+    if (r.week_start === weekStart && isRecordActive(r)) {
+      map[r.bucket_id] = r.content;
+    }
+  }
+  return map;
+}
+
+export async function setBucketTextEntry(
+  bucketId: string,
+  weekStart: string,
+  content: string
+): Promise<void> {
+  const nowIso = new Date().toISOString();
+  const entry: StoredBucketTextEntry = {
+    id: `${bucketId}::${weekStart}`,
+    bucket_id: bucketId,
+    week_start: weekStart,
+    content,
+    updated_at: nowIso,
+    deleted_at: null,
+  };
+  await putInStore("bucket_text_entries", entry);
+  notifyDatabaseUpdated("bucket_text_entries:update");
 }
 
 // ==========================================
@@ -841,7 +900,8 @@ export async function upsertRemoteBackupIntoLocal(
   remoteLocalEvents: LocalEvent[] = [],
   remoteNotePages: NotePage[] = [],
   remoteBucketDefs: BucketDefinition[] = [],
-  remoteBucketLayouts: BucketLayoutSnapshot[] = []
+  remoteBucketLayouts: BucketLayoutSnapshot[] = [],
+  remoteBucketTextEntries: BucketTextEntry[] = []
 ): Promise<number> {
   let upserted = 0;
 
@@ -1016,6 +1076,36 @@ export async function upsertRemoteBackupIntoLocal(
     }
   }
 
+  if (remoteBucketTextEntries.length > 0) {
+    const localTexts = await getAllBucketTextEntriesForBackup();
+    const localTextMap = new Map<string, BucketTextEntry>();
+    for (const t of localTexts) {
+      localTextMap.set(`${t.bucket_id}::${t.week_start}`, t);
+    }
+    for (const rawBt of remoteBucketTextEntries) {
+      if (!rawBt.bucket_id || !rawBt.week_start) continue;
+      const bt = resolveSoftDeleteWinner({
+        bucket_id: rawBt.bucket_id,
+        week_start: rawBt.week_start,
+        content: rawBt.content ?? "",
+        updated_at: rawBt.updated_at || "1970-01-01T00:00:00.000Z",
+        deleted_at: rawBt.deleted_at ?? null,
+      });
+      const key = `${bt.bucket_id}::${bt.week_start}`;
+      const existing = localTextMap.get(key);
+      if (
+        !existing ||
+        getEffectiveTimestamp(bt) > getEffectiveTimestamp(existing)
+      ) {
+        await putInStore("bucket_text_entries", {
+          id: key,
+          ...bt,
+        });
+        upserted++;
+      }
+    }
+  }
+
   if (upserted > 0) notifyDatabaseUpdated("github_sync:pull_upsert");
   return upserted;
 }
@@ -1025,7 +1115,8 @@ export async function replaceAllLocalDataWithRemote(
   remoteLocalEvents: LocalEvent[] = [],
   remoteNotePages: NotePage[] = [],
   remoteBucketDefs: BucketDefinition[] = [],
-  remoteBucketLayouts: BucketLayoutSnapshot[] = []
+  remoteBucketLayouts: BucketLayoutSnapshot[] = [],
+  remoteBucketTextEntries: BucketTextEntry[] = []
 ): Promise<void> {
   await replaceStoreContents(
     "tasks",
@@ -1084,6 +1175,21 @@ export async function replaceAllLocalDataWithRemote(
         buckets: Array.isArray(bl.buckets) ? bl.buckets : [],
         is_explicit_override: Boolean(bl.is_explicit_override),
         updated_at: bl.updated_at || new Date().toISOString(),
+      }))
+  );
+  await replaceStoreContents(
+    "bucket_text_entries",
+    remoteBucketTextEntries
+      .filter((bt) => Boolean(bt.bucket_id && bt.week_start))
+      .map((bt) => ({
+        id: `${bt.bucket_id}::${bt.week_start}`,
+        ...resolveSoftDeleteWinner({
+          bucket_id: bt.bucket_id,
+          week_start: bt.week_start,
+          content: bt.content ?? "",
+          updated_at: bt.updated_at || "1970-01-01T00:00:00.000Z",
+          deleted_at: bt.deleted_at ?? null,
+        }),
       }))
   );
   notifyDatabaseUpdated("github_sync:replace_all");

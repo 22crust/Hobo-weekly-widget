@@ -56,8 +56,14 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
           </div>
 
           <p className="text-[11px] text-hobo-ink leading-relaxed">
-            A new version of Local Planner is ready to download and install. Your tasks, events, notes, and stickers will be preserved.
+            A new version of Hobo weekly is ready to download and install. Your tasks, events, notes, and stickers will be preserved.
           </p>
+
+          {update.body && update.body.trim().length > 0 && (
+            <div className="p-2.5 bg-white/55 border border-hobo-line text-[11px] text-hobo-ink leading-relaxed whitespace-pre-line max-h-40 overflow-y-auto">
+              {update.body.trim()}
+            </div>
+          )}
 
           {isInstalling && (
             <div className="space-y-1 pt-1">

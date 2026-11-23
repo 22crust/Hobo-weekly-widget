@@ -2,7 +2,9 @@ import React, { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import {
   BucketDefinition,
+  BucketKind,
   BucketLayoutEntry,
+  getBucketKind,
   MAX_VISIBLE_BUCKETS,
   MAX_VISIBLE_BUCKETS_MESSAGE,
 } from "../../../shared/buckets";
@@ -14,7 +16,7 @@ interface ManageHiddenListsModalProps {
   onClose: () => void;
   onToggleVisibility: (bucketId: string, nextVisible: boolean) => void;
   onRenameBucket: (bucketId: string, newTitle: string) => Promise<void> | void;
-  onCountTasksInBucket: (bucketId: string) => Promise<number>;
+  onCountTasksInBucket: (bucketId: string, kind: BucketKind) => Promise<number>;
   onDeleteHiddenBucket: (bucketId: string) => Promise<void> | void;
 }
 
@@ -34,6 +36,7 @@ export const ManageHiddenListsModal: React.FC<ManageHiddenListsModalProps> = ({
   const [pendingDelete, setPendingDelete] = useState<{
     bucketId: string;
     title: string;
+    kind: BucketKind;
     taskCount: number;
   } | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -101,11 +104,13 @@ export const ManageHiddenListsModal: React.FC<ManageHiddenListsModalProps> = ({
 
   const handleDeleteClick = async (def: BucketDefinition) => {
     setWarningMessage(null);
-    const count = await onCountTasksInBucket(def.id);
+    const kind = getBucketKind(def);
+    const count = await onCountTasksInBucket(def.id, kind);
     if (count > 0) {
       setPendingDelete({
         bucketId: def.id,
         title: def.title,
+        kind,
         taskCount: count,
       });
     } else {
@@ -152,12 +157,24 @@ export const ManageHiddenListsModal: React.FC<ManageHiddenListsModalProps> = ({
         {pendingDelete ? (
           <div className="p-4 space-y-3">
             <p className="text-[11px] leading-relaxed text-hobo-ink">
-              Deleting the task list will delete{" "}
-              <span className="font-normal text-hobo-red">
-                {pendingDelete.taskCount}
-              </span>{" "}
-              task{pendingDelete.taskCount === 1 ? "" : "s"} under this list.
-              Proceed?
+              {pendingDelete.kind === "text" ? (
+                <>
+                  Deleting this section will delete notes from{" "}
+                  <span className="font-normal text-hobo-red">
+                    {pendingDelete.taskCount}
+                  </span>{" "}
+                  week(s). Proceed?
+                </>
+              ) : (
+                <>
+                  Deleting the task list will delete{" "}
+                  <span className="font-normal text-hobo-red">
+                    {pendingDelete.taskCount}
+                  </span>{" "}
+                  task{pendingDelete.taskCount === 1 ? "" : "s"} under this
+                  list. Proceed?
+                </>
+              )}
             </p>
             <div className="flex items-center justify-end gap-2 pt-1">
               <button
@@ -181,7 +198,7 @@ export const ManageHiddenListsModal: React.FC<ManageHiddenListsModalProps> = ({
             </div>
           </div>
         ) : (
-          <div className="p-3.5 max-h-[320px] overflow-y-auto divide-y divide-hobo-line">
+          <div className="p-3.5 max-h-[320px] overflow-y-auto">
             {orderedDefs.length === 0 ? (
               <p className="text-[11px] text-hobo-muted py-2 text-center">
                 No task lists exist yet. Right-click the tasks page to add one.
@@ -194,7 +211,7 @@ export const ManageHiddenListsModal: React.FC<ManageHiddenListsModalProps> = ({
                 return (
                   <div
                     key={def.id}
-                    className="py-2 flex items-center justify-between gap-2.5"
+                    className="py-1.5 min-h-[32px] flex items-center justify-between gap-2.5"
                   >
                     <div className="flex items-center gap-2.5 min-w-0 flex-1">
                       {/* On/Off Slider Toggle */}
@@ -203,15 +220,15 @@ export const ManageHiddenListsModal: React.FC<ManageHiddenListsModalProps> = ({
                         role="switch"
                         aria-checked={isVisible}
                         onClick={() => handleToggle(def.id, isVisible)}
-                        className={`relative w-7 h-4 rounded-full transition-colors shrink-0 border ${
+                        className={`relative inline-flex items-center w-6 h-3.5 rounded-full transition-colors shrink-0 border-0 p-[3px] ${
                           isVisible
-                            ? "bg-hobo-red border-hobo-red"
-                            : "bg-hobo-line border-hobo-lineDark"
+                            ? "bg-hobo-red"
+                            : "bg-hobo-line/70 ring-1 ring-inset ring-hobo-lineDark"
                         }`}
                       >
                         <span
-                          className={`block w-2.5 h-2.5 rounded-full bg-white transition-transform ${
-                            isVisible ? "translate-x-3.5" : "translate-x-0.5"
+                          className={`block w-2 h-2 rounded-full bg-white shadow-sm transition-transform ${
+                            isVisible ? "translate-x-[10px]" : "translate-x-0"
                           }`}
                         />
                       </button>
@@ -251,23 +268,30 @@ export const ManageHiddenListsModal: React.FC<ManageHiddenListsModalProps> = ({
                               {def.title}
                             </span>
                             <span className="text-[9px] text-hobo-faint uppercase shrink-0">
-                              {def.scope === "persistent" ? "long-term" : "weekly"}
+                              {getBucketKind(def) === "text"
+                                ? "text"
+                                : def.scope === "persistent"
+                                ? "long-term"
+                                : "weekly"}
                             </span>
                           </div>
                         )}
                       </div>
                     </div>
 
-                    {/* Permanent Delete X icon for hidden lists */}
-                    {!isVisible && (
-                      <button
-                        type="button"
-                        onClick={() => void handleDeleteClick(def)}
-                        className="p-0.5 text-hobo-muted hover:text-hobo-red bg-transparent border-0 shrink-0 transition-colors"
-                      >
-                        <X className="w-3.5 h-3.5 stroke-[1.5]" />
-                      </button>
-                    )}
+                    {/* Permanent Delete X icon for hidden lists (kept in layout when visible to prevent row height shift) */}
+                    <button
+                      type="button"
+                      disabled={isVisible}
+                      aria-hidden={isVisible}
+                      tabIndex={isVisible ? -1 : 0}
+                      onClick={() => void handleDeleteClick(def)}
+                      className={`p-0.5 text-hobo-muted hover:text-hobo-red bg-transparent border-0 shrink-0 transition-colors ${
+                        isVisible ? "invisible pointer-events-none" : ""
+                      }`}
+                    >
+                      <X className="w-3.5 h-3.5 stroke-[1.5]" />
+                    </button>
                   </div>
                 );
               })

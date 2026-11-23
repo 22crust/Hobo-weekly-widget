@@ -1,5 +1,5 @@
 const DB_NAME = "local-planner-pwa";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 export type StoreName =
   | "tasks"
@@ -8,6 +8,7 @@ export type StoreName =
   | "calendar_events"
   | "bucket_definitions"
   | "bucket_layouts"
+  | "bucket_text_entries"
   | "meta";
 
 let dbPromise: Promise<IDBDatabase> | null = null;
@@ -58,6 +59,9 @@ export function openIndexedDb(): Promise<IDBDatabase> {
         db.createObjectStore("bucket_layouts", {
           keyPath: "effective_from_week",
         });
+      }
+      if (!db.objectStoreNames.contains("bucket_text_entries")) {
+        db.createObjectStore("bucket_text_entries", { keyPath: "id" });
       }
       if (!db.objectStoreNames.contains("meta")) {
         db.createObjectStore("meta", { keyPath: "key" });

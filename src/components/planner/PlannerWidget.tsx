@@ -12,6 +12,7 @@ import {
 } from "../../db/appSettingsRepo";
 import { syncConfigToRustBackend } from "../../services/githubSyncService";
 import { usePlannerData } from "../../hooks/usePlannerData";
+import { subscribeMidnightRollover } from "../../../shared/plannerCore";
 import {
   fetchWeatherForecast,
   getSavedTemperatureUnit,
@@ -134,6 +135,24 @@ export const PlannerWidget: React.FC = () => {
     void initAccentColorOnBoot();
   }, []);
 
+  // Automatically advance to the new current week when the real-world week rolls over
+  const lastRealWeekRef = useRef<string>(
+    format(startOfWeek(new Date(), { weekStartsOn: 1 }), "yyyy-MM-dd")
+  );
+  useEffect(() => {
+    return subscribeMidnightRollover(() => {
+      const now = new Date();
+      const nowWeek = format(
+        startOfWeek(now, { weekStartsOn: 1 }),
+        "yyyy-MM-dd"
+      );
+      if (nowWeek !== lastRealWeekRef.current) {
+        lastRealWeekRef.current = nowWeek;
+        setCurrentWeekDate(now);
+      }
+    });
+  }, []);
+
   // Check for app updates on launch, then once every 24 hours while running
   useEffect(() => {
     let isDisposed = false;
@@ -206,6 +225,7 @@ export const PlannerWidget: React.FC = () => {
     longTermSidebarTasks,
     bucketDefinitions,
     bucketLayouts,
+    bucketTextByBucketId,
     weekImages,
     syncStatus,
     githubSyncStatus,
@@ -218,12 +238,11 @@ export const PlannerWidget: React.FC = () => {
     moveTaskToDate,
     moveTaskToSidebar,
     migrateTaskToWeek,
-    clearCompletedForWeekSidebar,
-    clearCompletedForLongTermSidebar,
     clearCompletedForBucket,
     createBucket,
     renameBucket,
     saveBucketLayouts,
+    saveBucketText,
     countTasksInBucket,
     deleteHiddenBucket,
     removeTask,
@@ -524,6 +543,7 @@ export const PlannerWidget: React.FC = () => {
             longTermSidebarTasks={longTermSidebarTasks}
             bucketDefinitions={bucketDefinitions}
             bucketLayouts={bucketLayouts}
+            bucketTextByBucketId={bucketTextByBucketId}
             weekImages={weekImages}
             dailyWeatherByDate={weather.dailyByDate}
             currentWeather={weather.current}
@@ -552,26 +572,6 @@ export const PlannerWidget: React.FC = () => {
                 show_in_sidebar: false,
               })
             }
-            onAddWeeklySidebarTask={(title) =>
-              addTask({
-                title,
-                assigned_date: null,
-                assigned_week_start: weekStartStr,
-                is_long_term: false,
-                show_in_weekly: false,
-                show_in_sidebar: true,
-              })
-            }
-            onAddLongTermSidebarTask={(title) =>
-              addTask({
-                title,
-                assigned_date: null,
-                assigned_week_start: null,
-                is_long_term: true,
-                show_in_weekly: false,
-                show_in_sidebar: true,
-              })
-            }
             onToggleTask={toggleTask}
             onEditTaskTitle={(id, title) => editTask(id, { title })}
             onDeleteTask={removeTask}
@@ -596,12 +596,6 @@ export const PlannerWidget: React.FC = () => {
             onMigrateTaskToNextWeek={(id) =>
               migrateTaskToWeek(id, nextWeekStartStr)
             }
-            onClearCompletedWeeklySidebar={() =>
-              clearCompletedForWeekSidebar(weekStartStr, weekEndStr)
-            }
-            onClearCompletedLongTermSidebar={() =>
-              clearCompletedForLongTermSidebar()
-            }
             onAddTaskInBucket={(bucketId, scope, title) =>
               addTask({
                 title,
@@ -623,10 +617,15 @@ export const PlannerWidget: React.FC = () => {
             onClearCompletedInBucket={(bucketId, scope) =>
               clearCompletedForBucket(bucketId, scope, weekStartStr, weekEndStr)
             }
-            onCreateBucket={(title, scope) => createBucket(title, scope)}
+            onCreateBucket={(title, scope, kind) => createBucket(title, scope, kind)}
             onRenameBucket={(id, newTitle) => renameBucket(id, newTitle)}
             onSaveBucketLayouts={(snapshots) => saveBucketLayouts(snapshots)}
-            onCountTasksInBucket={(bucketId) => countTasksInBucket(bucketId)}
+            onSaveBucketText={(bucketId, weekStart, content) =>
+              saveBucketText(bucketId, weekStart, content)
+            }
+            onCountTasksInBucket={(bucketId, kind) =>
+              countTasksInBucket(bucketId, kind)
+            }
             onDeleteHiddenBucket={(bucketId) => deleteHiddenBucket(bucketId)}
             onAddWeekImage={(input) => addWeekImage(input)}
             onUpdateWeekImage={(id, updates) => editWeekImage(id, updates)}

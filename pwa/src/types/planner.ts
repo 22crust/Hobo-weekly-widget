@@ -168,6 +168,14 @@ export interface GithubSyncStatusPayload {
 
 import type { SyncedPreferences } from "../../../shared/timeFormat";
 
+export interface BucketTextEntry {
+  bucket_id: string;
+  week_start: string;
+  content: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
 export interface PlannerBackupPayload {
   schema_version: number;
   exported_at: string;
@@ -178,6 +186,10 @@ export interface PlannerBackupPayload {
   note_pages?: NotePage[];
   bucket_definitions?: BucketDefinition[];
   bucket_layouts?: BucketLayoutSnapshot[];
+  bucket_text_entries?: BucketTextEntry[];
+  /** Preserved untouched from remote so mobile edits never erase desktop calendar tools */
+  mood_entries?: unknown[];
+  date_counters?: unknown[];
   preferences?: SyncedPreferences;
   local_tasks?: LocalTask[];
 }

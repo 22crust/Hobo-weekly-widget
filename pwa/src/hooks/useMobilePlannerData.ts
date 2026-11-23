@@ -14,6 +14,7 @@ import {
   getActiveBucketDefinitions,
   getAllBucketLayouts,
   getAppSettings,
+  getBucketTextEntriesForWeek,
   getCachedCalendarEventsInRange,
   getExpandedLocalEventsInRange,
   getLongTermSidebarTasks,
@@ -21,6 +22,7 @@ import {
   getWeeklySidebarTasks,
   saveLocalEventAllFuture,
   saveLocalEventThisOnly,
+  setBucketTextEntry,
   updateLocalEventSingle,
   updateLocalTask,
 } from "../db/plannerRepo";
@@ -75,6 +77,9 @@ export function useMobilePlannerData(
   const [longTermSidebarTasks, setLongTermSidebarTasks] = useState<LocalTask[]>([]);
   const [bucketDefinitions, setBucketDefinitions] = useState<BucketDefinition[]>([]);
   const [bucketLayouts, setBucketLayouts] = useState<BucketLayoutSnapshot[]>([]);
+  const [bucketTextByBucketId, setBucketTextByBucketId] = useState<
+    Record<string, string>
+  >({});
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [githubSyncStatus, setGithubSyncStatus] = useState<GithubSyncStatusPayload>({
@@ -96,6 +101,7 @@ export function useMobilePlannerData(
         appSettings,
         activeBucketDefs,
         allBucketLayouts,
+        weekTextMap,
       ] = await Promise.all([
         getCachedCalendarEventsInRange(weekStartDate, weekEndDate),
         getExpandedLocalEventsInRange(weekStartDate, weekEndDate),
@@ -107,6 +113,7 @@ export function useMobilePlannerData(
         getAppSettings(),
         getActiveBucketDefinitions(),
         getAllBucketLayouts(),
+        getBucketTextEntriesForWeek(weekStartDate),
       ]);
 
       const mergeSortEvents = (a: GoogleEvent[], b: GoogleEvent[]) =>
@@ -125,6 +132,7 @@ export function useMobilePlannerData(
       setLongTermSidebarTasks(ltTasks);
       setBucketDefinitions(activeBucketDefs);
       setBucketLayouts(allBucketLayouts);
+      setBucketTextByBucketId(weekTextMap);
       setSettings(appSettings);
       applyAccentColor(appSettings.accent_color);
 
@@ -254,6 +262,14 @@ export function useMobilePlannerData(
           weekStartDate
         );
       },
+      saveBucketText: async (
+        bucketId: string,
+        weekStart: string,
+        content: string
+      ) => {
+        setBucketTextByBucketId((prev) => ({ ...prev, [bucketId]: content }));
+        await setBucketTextEntry(bucketId, weekStart, content);
+      },
       migrateTaskToPrevWeek: async (syncId: string) => {
         const prevWeekStart = format(
           subWeeks(parseISO(weekStartDate), 1),
@@ -331,6 +347,7 @@ export function useMobilePlannerData(
     longTermSidebarTasks,
     bucketDefinitions,
     bucketLayouts,
+    bucketTextByBucketId,
     settings,
     isRefreshing,
     githubSyncStatus,

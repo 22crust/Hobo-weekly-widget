@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronLeft, ChevronRight, FilePlus2, Trash2 } from "lucide-react";
-import { onDatabaseUpdated } from "../../db/database";
+import { useDatabaseSubscription } from "../../hooks/useDatabaseSubscription";
+import { useDebouncedTextDraft } from "../../hooks/useDebouncedTextDraft";
 import {
   deleteNotePage,
   getAllNotePages,
@@ -38,7 +39,6 @@ export const NotesSidebar: React.FC<NotesSidebarProps> = ({
 }) => {
   const [pages, setPages] = useState<NotePage[]>([]);
   const [currentPageIdx, setCurrentPageIdx] = useState<number>(0);
-  const [draftContent, setDraftContent] = useState<string>("");
   const [pageImages, setPageImages] = useState<WeekImage[]>([]);
 
   // Inline page number jump input state
@@ -61,15 +61,31 @@ export const NotesSidebar: React.FC<NotesSidebarProps> = ({
   const notesBoxRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const saveTimerRef = useRef<number | null>(null);
-  const dirtyPageIdRef = useRef<string | null>(null);
-  const latestDraftRef = useRef<string>("");
-  const lastSyncedPageIdRef = useRef<string | null>(null);
   const isPageActionPendingRef = useRef<boolean>(false);
 
   const currentPage = pages[currentPageIdx] ?? null;
   const currentPageId = currentPage?.id ?? null;
+
+  const savePageContent = useCallback(async (pageId: string, text: string) => {
+    await updateNotePageContent(pageId, text);
+    setPages((prev) =>
+      prev.map((p) => (p.id === pageId ? { ...p, content: text } : p))
+    );
+  }, []);
+
+  const {
+    draft: draftContent,
+    textareaRef,
+    handleChange: handleDraftChange,
+    handleBlur: handleDraftBlur,
+    flushPendingSave,
+    cancelPendingSave,
+    isDirtyFor,
+  } = useDebouncedTextDraft({
+    keyId: currentPageId,
+    value: currentPage?.content ?? "",
+    onSave: savePageContent,
+  });
 
   const loadPages = useCallback(async () => {
     try {
@@ -100,52 +116,18 @@ export const NotesSidebar: React.FC<NotesSidebarProps> = ({
     void loadPages();
   }, [loadPages]);
 
-  // Sync draftContent when switching pages (never overwrite while actively typing or focused)
   useEffect(() => {
-    if (!currentPage) {
-      lastSyncedPageIdRef.current = null;
-      latestDraftRef.current = "";
-      setDraftContent("");
-      return;
-    }
-    const switchedPage = lastSyncedPageIdRef.current !== currentPage.id;
-    if (switchedPage) {
-      lastSyncedPageIdRef.current = currentPage.id;
-      latestDraftRef.current = currentPage.content;
-      setDraftContent(currentPage.content);
-    } else if (
-      dirtyPageIdRef.current !== currentPage.id &&
-      document.activeElement !== textareaRef.current &&
-      latestDraftRef.current !== currentPage.content
-    ) {
-      latestDraftRef.current = currentPage.content;
-      setDraftContent(currentPage.content);
-    }
-    void loadStickersForPage(currentPage.id);
-  }, [currentPageId, currentPage?.content, loadStickersForPage]);
+    void loadStickersForPage(currentPageId);
+  }, [currentPageId, loadStickersForPage]);
 
   // Subscribe to DB updates (e.g., pasting a sticker on a note page)
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let isDisposed = false;
-
-    void onDatabaseUpdated((source) => {
-      if (isDisposed) return;
-      if (source?.startsWith("week_images:") && currentPageId) {
-        void loadStickersForPage(currentPageId);
-      } else if (source?.startsWith("note_pages:") && !dirtyPageIdRef.current) {
-        void loadPages();
-      }
-    }).then((fn) => {
-      if (isDisposed) fn();
-      else unlisten = fn;
-    });
-
-    return () => {
-      isDisposed = true;
-      unlisten?.();
-    };
-  }, [currentPageId, loadPages, loadStickersForPage]);
+  useDatabaseSubscription((source) => {
+    if (source?.startsWith("week_images:") && currentPageId) {
+      void loadStickersForPage(currentPageId);
+    } else if (source?.startsWith("note_pages:") && !isDirtyFor()) {
+      void loadPages();
+    }
+  });
 
   // Match WeekBoard's exact gridSizePx & 7-day height alignment
   useEffect(() => {
@@ -199,45 +181,10 @@ export const NotesSidebar: React.FC<NotesSidebarProps> = ({
     };
   }, [contextMenuPos]);
 
-  const flushContentSave = useCallback(
-    async (pageId: string, text: string) => {
-      if (saveTimerRef.current !== null) {
-        window.clearTimeout(saveTimerRef.current);
-        saveTimerRef.current = null;
-      }
-      await updateNotePageContent(pageId, text);
-      if (dirtyPageIdRef.current === pageId && latestDraftRef.current === text) {
-        dirtyPageIdRef.current = null;
-      }
-      setPages((prev) =>
-        prev.map((p) => (p.id === pageId ? { ...p, content: text } : p))
-      );
-    },
-    []
-  );
-
-  const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const nextVal = e.target.value;
-    latestDraftRef.current = nextVal;
-    setDraftContent(nextVal);
-    if (!currentPageId) return;
-
-    dirtyPageIdRef.current = currentPageId;
-    if (saveTimerRef.current !== null) {
-      window.clearTimeout(saveTimerRef.current);
-    }
-    const targetId = currentPageId;
-    saveTimerRef.current = window.setTimeout(() => {
-      void flushContentSave(targetId, nextVal);
-    }, 350);
-  };
-
   const goToPageIndex = async (nextIdx: number) => {
     if (pages.length === 0) return;
     const clamped = Math.max(0, Math.min(pages.length - 1, nextIdx));
-    if (currentPageId && dirtyPageIdRef.current === currentPageId) {
-      await flushContentSave(currentPageId, draftContent);
-    }
+    await flushPendingSave();
     setCurrentPageIdx(clamped);
   };
 
@@ -259,9 +206,7 @@ export const NotesSidebar: React.FC<NotesSidebarProps> = ({
     if (!currentPageId || isPageActionPendingRef.current) return;
     isPageActionPendingRef.current = true;
     try {
-      if (dirtyPageIdRef.current === currentPageId) {
-        await flushContentSave(currentPageId, draftContent);
-      }
+      await flushPendingSave();
       const newPage = await insertNotePageAfter(currentPageId);
       const updated = await getAllNotePages();
       setPages(updated);
@@ -281,11 +226,7 @@ export const NotesSidebar: React.FC<NotesSidebarProps> = ({
     }
     isPageActionPendingRef.current = true;
     try {
-      dirtyPageIdRef.current = null;
-      if (saveTimerRef.current !== null) {
-        window.clearTimeout(saveTimerRef.current);
-        saveTimerRef.current = null;
-      }
+      cancelPendingSave();
       const deletingIdx = currentPageIdx;
       await deleteNotePage(currentPageId);
       const updated = await getAllNotePages();
@@ -446,12 +387,8 @@ export const NotesSidebar: React.FC<NotesSidebarProps> = ({
               <textarea
                 ref={textareaRef}
                 value={draftContent}
-                onChange={handleTextChange}
-                onBlur={() => {
-                  if (currentPageId && dirtyPageIdRef.current === currentPageId) {
-                    void flushContentSave(currentPageId, draftContent);
-                  }
-                }}
+                onChange={(e) => handleDraftChange(e.target.value)}
+                onBlur={handleDraftBlur}
                 placeholder=""
                 className="block relative z-10 w-full bg-transparent border-0 outline-none resize-none px-3 py-2 text-[12px] leading-[17px] font-light text-hobo-ink overflow-hidden"
               />

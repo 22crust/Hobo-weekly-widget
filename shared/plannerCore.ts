@@ -81,6 +81,25 @@ export function resolveSoftDeleteWinner<
   return item;
 }
 
+/**
+ * Resolves the winning `(updated_at, deleted_at)` pair when merging a remote
+ * soft-deletable record into an existing local record.
+ */
+export function mergeRecordTimestamps(
+  local: { updated_at: string; deleted_at?: string | null },
+  remote: { updated_at: string; deleted_at?: string | null }
+): { updated_at: string; deleted_at: string | null } {
+  const newestUpdated =
+    remote.updated_at > local.updated_at ? remote.updated_at : local.updated_at;
+  const candDeleted =
+    (remote.deleted_at || "") > (local.deleted_at || "")
+      ? remote.deleted_at ?? null
+      : local.deleted_at ?? null;
+  const winningDeleted =
+    candDeleted && candDeleted >= newestUpdated ? candDeleted : null;
+  return { updated_at: newestUpdated, deleted_at: winningDeleted };
+}
+
 export function deterministicNegativeId(key: string): number {
   let hash = 0;
   for (let i = 0; i < key.length; i++) {
@@ -197,4 +216,65 @@ export function expandLocalEventsInRange(
   }
 
   return occurrences;
+}
+
+/**
+ * Schedules a one-shot timer for the next local midnight (plus focus/visibility
+ * listeners for wake-from-sleep) so date/week/month rollovers occur without polling.
+ */
+export function subscribeMidnightRollover(onRolloverCheck: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+
+  let timerId: number | null = null;
+
+  const scheduleNext = () => {
+    if (timerId !== null) {
+      window.clearTimeout(timerId);
+    }
+    const now = new Date();
+    const nextMidnight = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate() + 1,
+      0,
+      0,
+      0,
+      50
+    );
+    const delayMs = Math.max(1000, nextMidnight.getTime() - now.getTime());
+    timerId = window.setTimeout(() => {
+      onRolloverCheck();
+      scheduleNext();
+    }, delayMs);
+  };
+
+  const handleWake = () => {
+    onRolloverCheck();
+    scheduleNext();
+  };
+
+  scheduleNext();
+  window.addEventListener("focus", handleWake);
+  document.addEventListener("visibilitychange", handleWake);
+
+  return () => {
+    if (timerId !== null) {
+      window.clearTimeout(timerId);
+    }
+    window.removeEventListener("focus", handleWake);
+    document.removeEventListener("visibilitychange", handleWake);
+  };
+}
+
+export function getGithubStatusDotClass(status: string): string {
+  switch (status) {
+    case "syncing":
+      return "bg-amber-500 animate-pulse";
+    case "synced":
+      return "bg-emerald-600";
+    case "error":
+      return "bg-hobo-red";
+    default:
+      return "bg-hobo-muted/60";
+  }
 }

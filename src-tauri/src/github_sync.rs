@@ -435,8 +435,18 @@ pub struct PlannerBackupPayload {
     pub bucket_definitions: Vec<SyncedBucketDefinition>,
     #[serde(default, deserialize_with = "deserialize_forgiving_vec")]
     pub bucket_layouts: Vec<SyncedBucketLayoutSnapshot>,
+    #[serde(default, deserialize_with = "deserialize_forgiving_vec")]
+    pub bucket_text_entries: Vec<SyncedBucketTextEntry>,
+    #[serde(default, deserialize_with = "deserialize_forgiving_vec")]
+    pub mood_entries: Vec<SyncedMoodEntry>,
+    #[serde(default, deserialize_with = "deserialize_forgiving_vec")]
+    pub date_counters: Vec<SyncedDateCounter>,
     #[serde(default)]
     pub preferences: Option<SyncedPreferences>,
+}
+
+fn default_bucket_kind() -> String {
+    "tasks".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -447,6 +457,8 @@ pub struct SyncedBucketDefinition {
     pub title: String,
     #[serde(default)]
     pub scope: String,
+    #[serde(default = "default_bucket_kind")]
+    pub kind: String,
     #[serde(default = "default_epoch_iso")]
     pub created_at: String,
     #[serde(default = "default_epoch_iso")]
@@ -455,7 +467,103 @@ pub struct SyncedBucketDefinition {
     pub deleted_at: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SyncedBucketTextEntry {
+    #[serde(default)]
+    pub bucket_id: String,
+    #[serde(default)]
+    pub week_start: String,
+    #[serde(default)]
+    pub content: String,
+    #[serde(default = "default_epoch_iso")]
+    pub updated_at: String,
+    #[serde(default)]
+    pub deleted_at: Option<String>,
+}
+
+impl SyncedBucketTextEntry {
+    pub fn normalized(mut self) -> Self {
+        if let Some(ref del) = self.deleted_at {
+            if self.updated_at > *del {
+                self.deleted_at = None;
+            }
+        }
+        self
+    }
+
+    pub fn effective_timestamp(&self) -> &str {
+        match &self.deleted_at {
+            Some(del) if del.as_str() > self.updated_at.as_str() => del.as_str(),
+            _ => self.updated_at.as_str(),
+        }
+    }
+}
+
 impl SyncedBucketDefinition {
+    pub fn normalized(mut self) -> Self {
+        if let Some(ref del) = self.deleted_at {
+            if self.updated_at > *del {
+                self.deleted_at = None;
+            }
+        }
+        self
+    }
+
+    pub fn effective_timestamp(&self) -> &str {
+        match &self.deleted_at {
+            Some(del) if del.as_str() > self.updated_at.as_str() => del.as_str(),
+            _ => self.updated_at.as_str(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SyncedMoodEntry {
+    #[serde(default)]
+    pub date: String,
+    #[serde(default)]
+    pub color_key: String,
+    #[serde(default = "default_epoch_iso")]
+    pub updated_at: String,
+    #[serde(default)]
+    pub deleted_at: Option<String>,
+}
+
+impl SyncedMoodEntry {
+    pub fn normalized(mut self) -> Self {
+        if let Some(ref del) = self.deleted_at {
+            if self.updated_at > *del {
+                self.deleted_at = None;
+            }
+        }
+        self
+    }
+
+    pub fn effective_timestamp(&self) -> &str {
+        match &self.deleted_at {
+            Some(del) if del.as_str() > self.updated_at.as_str() => del.as_str(),
+            _ => self.updated_at.as_str(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SyncedDateCounter {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub target_date: String,
+    #[serde(default = "default_epoch_iso")]
+    pub created_at: String,
+    #[serde(default = "default_epoch_iso")]
+    pub updated_at: String,
+    #[serde(default)]
+    pub deleted_at: Option<String>,
+}
+
+impl SyncedDateCounter {
     pub fn normalized(mut self) -> Self {
         if let Some(ref del) = self.deleted_at {
             if self.updated_at > *del {
@@ -479,6 +587,10 @@ pub struct SyncedPreferences {
     pub time_format: Option<String>,
     #[serde(default)]
     pub updated_at: Option<String>,
+    #[serde(default)]
+    pub calendar_tools: Option<Vec<String>>,
+    #[serde(default)]
+    pub calendar_tools_updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -512,6 +624,9 @@ impl PlannerBackupPayload {
             && self.note_pages == other.note_pages
             && self.bucket_definitions == other.bucket_definitions
             && self.bucket_layouts == other.bucket_layouts
+            && self.bucket_text_entries == other.bucket_text_entries
+            && self.mood_entries == other.mood_entries
+            && self.date_counters == other.date_counters
             && self.preferences == other.preferences
     }
 }
@@ -527,6 +642,9 @@ impl Default for PlannerBackupPayload {
             note_pages: Vec::new(),
             bucket_definitions: Vec::new(),
             bucket_layouts: Vec::new(),
+            bucket_text_entries: Vec::new(),
+            mood_entries: Vec::new(),
+            date_counters: Vec::new(),
             preferences: None,
         }
     }
@@ -696,6 +814,90 @@ pub fn merge_backup_payloads(
         }
     }
 
+    let mut bucket_text_map: std::collections::HashMap<(String, String), SyncedBucketTextEntry> =
+        std::collections::HashMap::new();
+    for bt in &local.bucket_text_entries {
+        if bt.bucket_id.is_empty() || bt.week_start.is_empty() {
+            continue;
+        }
+        let norm = bt.clone().normalized();
+        bucket_text_map.insert((norm.bucket_id.clone(), norm.week_start.clone()), norm);
+    }
+
+    let mut mood_map: std::collections::HashMap<String, SyncedMoodEntry> =
+        std::collections::HashMap::new();
+    for m in &local.mood_entries {
+        if m.date.is_empty() {
+            continue;
+        }
+        let norm = m.clone().normalized();
+        mood_map.insert(norm.date.clone(), norm);
+    }
+
+    let mut counter_map: std::collections::HashMap<String, SyncedDateCounter> =
+        std::collections::HashMap::new();
+    for c in &local.date_counters {
+        if c.id.is_empty() {
+            continue;
+        }
+        let norm = c.clone().normalized();
+        counter_map.insert(norm.id.clone(), norm);
+    }
+
+    if let Some(rem) = remote {
+        for rbt in &rem.bucket_text_entries {
+            if rbt.bucket_id.is_empty() || rbt.week_start.is_empty() {
+                continue;
+            }
+            let norm = rbt.clone().normalized();
+            let key = (norm.bucket_id.clone(), norm.week_start.clone());
+            match bucket_text_map.get(&key) {
+                None => {
+                    bucket_text_map.insert(key, norm);
+                }
+                Some(existing) => {
+                    if norm.effective_timestamp() > existing.effective_timestamp() {
+                        bucket_text_map.insert(key, norm);
+                    }
+                }
+            }
+        }
+
+        for rm in &rem.mood_entries {
+            if rm.date.is_empty() {
+                continue;
+            }
+            let norm = rm.clone().normalized();
+            match mood_map.get(&norm.date) {
+                None => {
+                    mood_map.insert(norm.date.clone(), norm);
+                }
+                Some(existing) => {
+                    if norm.effective_timestamp() > existing.effective_timestamp() {
+                        mood_map.insert(norm.date.clone(), norm);
+                    }
+                }
+            }
+        }
+
+        for rc in &rem.date_counters {
+            if rc.id.is_empty() {
+                continue;
+            }
+            let norm = rc.clone().normalized();
+            match counter_map.get(&norm.id) {
+                None => {
+                    counter_map.insert(norm.id.clone(), norm);
+                }
+                Some(existing) => {
+                    if norm.effective_timestamp() > existing.effective_timestamp() {
+                        counter_map.insert(norm.id.clone(), norm);
+                    }
+                }
+            }
+        }
+    }
+
     let mut merged_tasks: Vec<SyncedLocalTask> = task_map.into_values().collect();
     let mut merged_images: Vec<SyncedWeekImage> = image_map.into_values().collect();
     let mut merged_events: Vec<SyncedLocalEvent> = event_map.into_values().collect();
@@ -704,6 +906,10 @@ pub fn merge_backup_payloads(
         bucket_def_map.into_values().collect();
     let merged_bucket_layouts: Vec<SyncedBucketLayoutSnapshot> =
         bucket_layout_map.into_values().collect();
+    let mut merged_bucket_text_entries: Vec<SyncedBucketTextEntry> =
+        bucket_text_map.into_values().collect();
+    let mut merged_mood_entries: Vec<SyncedMoodEntry> = mood_map.into_values().collect();
+    let mut merged_date_counters: Vec<SyncedDateCounter> = counter_map.into_values().collect();
 
     if exclude_soft_deleted {
         merged_tasks.retain(|t| t.deleted_at.is_none());
@@ -711,17 +917,35 @@ pub fn merge_backup_payloads(
         merged_events.retain(|ev| ev.deleted_at.is_none());
         merged_notes.retain(|np| np.deleted_at.is_none());
         merged_bucket_defs.retain(|bd| bd.deleted_at.is_none());
+        merged_bucket_text_entries.retain(|bt| bt.deleted_at.is_none());
+        merged_mood_entries.retain(|m| m.deleted_at.is_none());
+        merged_date_counters.retain(|c| c.deleted_at.is_none());
     }
 
     let merged_preferences = match (&local.preferences, remote.and_then(|r| r.preferences.as_ref())) {
         (Some(lp), Some(rp)) => {
             let lts = lp.updated_at.as_deref().unwrap_or("");
             let rts = rp.updated_at.as_deref().unwrap_or("");
-            if rts > lts {
-                Some(rp.clone())
+            let (time_format, updated_at) = if rts > lts {
+                (rp.time_format.clone(), rp.updated_at.clone())
             } else {
-                Some(lp.clone())
-            }
+                (lp.time_format.clone(), lp.updated_at.clone())
+            };
+
+            let lcts = lp.calendar_tools_updated_at.as_deref().unwrap_or("");
+            let rcts = rp.calendar_tools_updated_at.as_deref().unwrap_or("");
+            let (calendar_tools, calendar_tools_updated_at) = if rcts > lcts {
+                (rp.calendar_tools.clone(), rp.calendar_tools_updated_at.clone())
+            } else {
+                (lp.calendar_tools.clone(), lp.calendar_tools_updated_at.clone())
+            };
+
+            Some(SyncedPreferences {
+                time_format,
+                updated_at,
+                calendar_tools,
+                calendar_tools_updated_at,
+            })
         }
         (Some(lp), None) => Some(lp.clone()),
         (None, Some(rp)) => Some(rp.clone()),
@@ -737,6 +961,9 @@ pub fn merge_backup_payloads(
         note_pages: merged_notes,
         bucket_definitions: merged_bucket_defs,
         bucket_layouts: merged_bucket_layouts,
+        bucket_text_entries: merged_bucket_text_entries,
+        mood_entries: merged_mood_entries,
+        date_counters: merged_date_counters,
         preferences: merged_preferences,
     }
 }
@@ -767,6 +994,9 @@ pub fn parse_backup_payload_forgiving(raw_json: &str) -> PlannerBackupPayload {
             note_pages: Vec::new(),
             bucket_definitions: Vec::new(),
             bucket_layouts: Vec::new(),
+            bucket_text_entries: Vec::new(),
+            mood_entries: Vec::new(),
+            date_counters: Vec::new(),
             preferences: None,
         };
     }

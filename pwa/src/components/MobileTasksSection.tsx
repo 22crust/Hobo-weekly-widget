@@ -4,11 +4,47 @@ import {
   BucketDefinition,
   BucketLayoutSnapshot,
   BucketScope,
+  getBucketKind,
   getDefaultBucketDefinitions,
   resolveWeekLayout,
 } from "../../../shared/buckets";
+import { useDebouncedTextDraft } from "../hooks/useDebouncedTextDraft";
 import { LocalTask } from "../types/planner";
 import { MobileTaskItem } from "./MobileTaskItem";
+
+interface MobileBucketTextEditorProps {
+  bucketId: string;
+  weekStartDate: string;
+  value: string;
+  onSave: (bucketId: string, weekStart: string, content: string) => void;
+}
+
+const MobileBucketTextEditor: React.FC<MobileBucketTextEditorProps> = ({
+  bucketId,
+  weekStartDate,
+  value,
+  onSave,
+}) => {
+  const { draft, textareaRef, handleChange, handleBlur } =
+    useDebouncedTextDraft({
+      keyId: `${bucketId}::${weekStartDate}`,
+      value,
+      onSave: (_key, text) => {
+        onSave(bucketId, weekStartDate, text);
+      },
+    });
+
+  return (
+    <textarea
+      ref={textareaRef}
+      rows={4}
+      value={draft}
+      onChange={(e) => handleChange(e.target.value)}
+      onBlur={handleBlur}
+      className="w-full py-1 bg-transparent text-[13.5px] leading-[20px] text-hobo-ink outline-none resize-y border-0"
+    />
+  );
+};
 
 interface MobileTasksSectionProps {
   weekStartDate: string;
@@ -16,7 +52,9 @@ interface MobileTasksSectionProps {
   longTermTasks: LocalTask[];
   bucketDefinitions: BucketDefinition[];
   bucketLayouts: BucketLayoutSnapshot[];
+  bucketTextByBucketId: Record<string, string>;
   onAddTaskInBucket: (bucketId: string, scope: BucketScope, title: string) => void;
+  onSaveBucketText: (bucketId: string, weekStart: string, content: string) => void;
   onToggleTask: (task: LocalTask) => void;
   onEditTaskTitle: (syncId: string, title: string) => void;
   onDeleteTask: (syncId: string) => void;
@@ -31,7 +69,9 @@ export const MobileTasksSection: React.FC<MobileTasksSectionProps> = ({
   longTermTasks,
   bucketDefinitions,
   bucketLayouts,
+  bucketTextByBucketId,
   onAddTaskInBucket,
+  onSaveBucketText,
   onToggleTask,
   onEditTaskTitle,
   onDeleteTask,
@@ -99,7 +139,7 @@ export const MobileTasksSection: React.FC<MobileTasksSectionProps> = ({
               <h3 className="text-[11px] uppercase tracking-[0.14em] text-hobo-ink font-medium">
                 {def.title}
               </h3>
-              {hasCompleted && (
+              {getBucketKind(def) !== "text" && hasCompleted && (
                 <button
                   type="button"
                   onClick={() => onClearCompletedInBucket(def.id, def.scope)}
@@ -110,6 +150,14 @@ export const MobileTasksSection: React.FC<MobileTasksSectionProps> = ({
               )}
             </div>
 
+            {getBucketKind(def) === "text" ? (
+              <MobileBucketTextEditor
+                bucketId={def.id}
+                weekStartDate={weekStartDate}
+                value={bucketTextByBucketId[def.id] ?? ""}
+                onSave={onSaveBucketText}
+              />
+            ) : (
             <div className="pt-0.5 space-y-0">
               {bucketTasks.map((task) => (
                 <MobileTaskItem
@@ -154,6 +202,7 @@ export const MobileTasksSection: React.FC<MobileTasksSectionProps> = ({
                 />
               </form>
             </div>
+            )}
           </div>
         );
       })}

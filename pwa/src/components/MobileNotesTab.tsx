@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight, FilePlus2, Trash2 } from "lucide-react";
 import { onDatabaseUpdated } from "../db/indexedDb";
 import {
@@ -7,19 +7,28 @@ import {
   insertNotePageAfter,
   updateNotePageContent,
 } from "../db/plannerRepo";
+import { useDebouncedTextDraft } from "../hooks/useDebouncedTextDraft";
 import { NotePage } from "../types/planner";
 
 export const MobileNotesTab: React.FC = () => {
   const [pages, setPages] = useState<NotePage[]>([]);
   const [currentPageIdx, setCurrentPageIdx] = useState(0);
-  const [draftContent, setDraftContent] = useState("");
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const saveTimerRef = useRef<number | null>(null);
-  const dirtyPageIdRef = useRef<string | null>(null);
-  const latestDraftRef = useRef<string>("");
-  const lastSyncedPageIdRef = useRef<string | null>(null);
 
   const currentPage = pages[currentPageIdx] ?? null;
+
+  const {
+    draft: draftContent,
+    textareaRef,
+    handleChange,
+    handleBlur,
+    flushPendingSave,
+    cancelPendingSave,
+    resetDraft,
+  } = useDebouncedTextDraft({
+    keyId: currentPage?.id ?? null,
+    value: currentPage?.content ?? "",
+    onSave: updateNotePageContent,
+  });
 
   const loadPages = useCallback(async () => {
     const loaded = await getAllNotePages();
@@ -41,86 +50,26 @@ export const MobileNotesTab: React.FC = () => {
     });
   }, [loadPages]);
 
-  useEffect(() => {
-    if (!currentPage) {
-      lastSyncedPageIdRef.current = null;
-      latestDraftRef.current = "";
-      setDraftContent("");
-      return;
-    }
-    const switchedPage = lastSyncedPageIdRef.current !== currentPage.id;
-    if (switchedPage) {
-      lastSyncedPageIdRef.current = currentPage.id;
-      latestDraftRef.current = currentPage.content;
-      setDraftContent(currentPage.content);
-    } else if (
-      dirtyPageIdRef.current !== currentPage.id &&
-      document.activeElement !== textareaRef.current &&
-      latestDraftRef.current !== currentPage.content
-    ) {
-      latestDraftRef.current = currentPage.content;
-      setDraftContent(currentPage.content);
-    }
-  }, [currentPage?.id, currentPage?.content]);
-
-  const flushSave = useCallback(async (pageId: string, content: string) => {
-    if (saveTimerRef.current !== null) {
-      window.clearTimeout(saveTimerRef.current);
-      saveTimerRef.current = null;
-    }
-    await updateNotePageContent(pageId, content);
-    if (dirtyPageIdRef.current === pageId && latestDraftRef.current === content) {
-      dirtyPageIdRef.current = null;
-    }
-  }, []);
-
-  const handleChange = (val: string) => {
-    latestDraftRef.current = val;
-    setDraftContent(val);
-    if (!currentPage) return;
-    const pageId = currentPage.id;
-    dirtyPageIdRef.current = pageId;
-    if (saveTimerRef.current !== null) {
-      window.clearTimeout(saveTimerRef.current);
-    }
-    saveTimerRef.current = window.setTimeout(() => {
-      saveTimerRef.current = null;
-      void updateNotePageContent(pageId, val).then(() => {
-        if (dirtyPageIdRef.current === pageId && latestDraftRef.current === val) {
-          dirtyPageIdRef.current = null;
-        }
-      });
-    }, 350);
-  };
-
   const handleSwitchPage = async (nextIdx: number) => {
-    if (currentPage && dirtyPageIdRef.current === currentPage.id) {
-      await flushSave(currentPage.id, draftContent);
-    }
+    await flushPendingSave();
     setCurrentPageIdx(nextIdx);
   };
 
   const handleAddPage = async () => {
     if (!currentPage) return;
-    if (dirtyPageIdRef.current === currentPage.id) {
-      await flushSave(currentPage.id, draftContent);
-    }
+    await flushPendingSave();
     const created = await insertNotePageAfter(currentPage.id);
     const updated = await getAllNotePages();
     const newIdx = updated.findIndex((p) => p.id === created.id);
     const targetIdx = newIdx >= 0 ? newIdx : Math.min(updated.length - 1, currentPageIdx + 1);
     setPages(updated);
     setCurrentPageIdx(targetIdx);
-    setDraftContent("");
+    resetDraft("");
   };
 
   const handleDeletePage = async () => {
     if (!currentPage || pages.length <= 1) return;
-    if (saveTimerRef.current !== null) {
-      window.clearTimeout(saveTimerRef.current);
-      saveTimerRef.current = null;
-    }
-    dirtyPageIdRef.current = null;
+    cancelPendingSave();
     const prevIdx = Math.max(0, currentPageIdx - 1);
     await deleteNotePage(currentPage.id);
     const updated = await getAllNotePages();
@@ -183,6 +132,7 @@ export const MobileNotesTab: React.FC = () => {
         ref={textareaRef}
         value={draftContent}
         onChange={(e) => handleChange(e.target.value)}
+        onBlur={handleBlur}
         className="flex-1 w-full py-1 bg-transparent text-[13.5px] leading-[20px] text-hobo-ink outline-none resize-none"
       />
     </div>
