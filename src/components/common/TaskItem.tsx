@@ -1,6 +1,11 @@
 import React, { useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, X } from "lucide-react";
 import { LocalTask } from "../../types/planner";
+import {
+  applyTaskDropIndicator,
+  clearTaskDropIndicator,
+  computeTaskDropInsertion,
+} from "../../../shared/taskDragDrop";
 
 // Module-level dragged task ID for pointer drag-and-drop
 let activeDraggedTaskId: number | null = null;
@@ -73,6 +78,25 @@ export const TaskItem: React.FC<TaskItemProps> = ({
     const startX = e.clientX;
     const startY = e.clientY;
     let dragging = false;
+    let indicatorTarget: HTMLElement | null = null;
+
+    const findMatchedDropZone = (x: number, y: number): HTMLElement | null => {
+      const allDropZones = document.querySelectorAll<HTMLElement>(
+        "[data-task-drop-zone]"
+      );
+      for (const zone of allDropZones) {
+        const rect = zone.getBoundingClientRect();
+        if (
+          x >= rect.left &&
+          x <= rect.right &&
+          y >= rect.top &&
+          y <= rect.bottom
+        ) {
+          return zone;
+        }
+      }
+      return null;
+    };
 
     const onMouseMove = (moveEvent: MouseEvent) => {
       const dx = moveEvent.clientX - startX;
@@ -83,35 +107,47 @@ export const TaskItem: React.FC<TaskItemProps> = ({
       }
       if (dragging) {
         setDragOffset({ x: moveEvent.clientX, y: moveEvent.clientY });
+        const zone = findMatchedDropZone(moveEvent.clientX, moveEvent.clientY);
+        if (zone) {
+          const insertion = computeTaskDropInsertion(
+            zone,
+            moveEvent.clientY,
+            "data-task-id",
+            String(task.id),
+            task.is_completed
+          );
+          indicatorTarget = applyTaskDropIndicator(
+            indicatorTarget,
+            insertion.indicatorTarget,
+            insertion.indicatorPosition
+          );
+        } else {
+          clearTaskDropIndicator(indicatorTarget);
+          indicatorTarget = null;
+        }
       }
     };
 
     const onMouseUp = (upEvent: MouseEvent) => {
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
+      clearTaskDropIndicator(indicatorTarget);
+      indicatorTarget = null;
       if (dragging) {
         setDragOffset(null);
-        const allDropZones = document.querySelectorAll<HTMLElement>(
-          "[data-task-drop-zone]"
-        );
-        let matchedZone: HTMLElement | null = null;
-        for (const zone of allDropZones) {
-          const rect = zone.getBoundingClientRect();
-          if (
-            upEvent.clientX >= rect.left &&
-            upEvent.clientX <= rect.right &&
-            upEvent.clientY >= rect.top &&
-            upEvent.clientY <= rect.bottom
-          ) {
-            matchedZone = zone;
-            break;
-          }
-        }
+        const matchedZone = findMatchedDropZone(upEvent.clientX, upEvent.clientY);
         if (matchedZone) {
+          const insertion = computeTaskDropInsertion(
+            matchedZone,
+            upEvent.clientY,
+            "data-task-id",
+            String(task.id),
+            task.is_completed
+          );
           matchedZone.dispatchEvent(
             new CustomEvent("planner:task-pointer-drop", {
               bubbles: true,
-              detail: { taskId: task.id },
+              detail: { taskId: task.id, insertIndex: insertion.insertIndex },
             })
           );
         }
@@ -126,6 +162,8 @@ export const TaskItem: React.FC<TaskItemProps> = ({
   return (
     <>
       <div
+        data-task-id={task.id}
+        data-task-completed={task.is_completed ? "1" : "0"}
         onMouseDown={handleMouseDown}
         className={`group relative flex items-start gap-1.5 py-[1px] text-[12px] leading-[16px] text-hobo-ink select-none ${
           dragOffset ? "opacity-30" : ""

@@ -193,7 +193,8 @@ export async function createLocalTask(
  */
 export async function updateLocalTask(
   id: number,
-  updates: UpdateLocalTaskInput
+  updates: UpdateLocalTaskInput,
+  skipNotify = false
 ): Promise<void> {
   const db = await getDatabase();
   const existingRows = await db.select<RawLocalTaskRow[]>(
@@ -288,7 +289,9 @@ export async function updateLocalTask(
     ]
   );
 
-  await notifyDatabaseUpdated("local_tasks:update");
+  if (!skipNotify) {
+    await notifyDatabaseUpdated("local_tasks:update");
+  }
 }
 
 /**
@@ -302,12 +305,32 @@ export async function toggleLocalTaskCompletion(
 }
 
 /**
+ * Persists sequential `sort_order` values for a list of task IDs.
+ */
+export async function reorderLocalTasks(orderedIds: number[]): Promise<void> {
+  if (orderedIds.length === 0) return;
+  const db = await getDatabase();
+  const nowIso = new Date().toISOString();
+  for (let i = 0; i < orderedIds.length; i++) {
+    await db.execute(
+      `UPDATE local_tasks
+       SET sort_order = $1,
+           updated_at = $2
+       WHERE id = $3`,
+      [i + 1, nowIso, orderedIds[i]]
+    );
+  }
+  await notifyDatabaseUpdated("local_tasks:reorder");
+}
+
+/**
  * Moves a local task exclusively to a specific day column (`assignedDate = YYYY-MM-DD`).
  */
 export async function moveLocalTaskToDate(
   id: number,
   assignedDate: string,
-  keepInSidebar = false
+  keepInSidebar = false,
+  skipNotify = false
 ): Promise<void> {
   const updates: UpdateLocalTaskInput = {
     assigned_date: assignedDate,
@@ -316,7 +339,7 @@ export async function moveLocalTaskToDate(
     show_in_weekly: true,
     show_in_sidebar: keepInSidebar,
   };
-  await updateLocalTask(id, updates);
+  await updateLocalTask(id, updates, skipNotify);
 }
 
 /**
@@ -329,7 +352,8 @@ export async function moveLocalTaskToSidebar(
     isLongTerm: boolean;
     bucketId?: string;
     keepInDayColumn?: boolean;
-  }
+  },
+  skipNotify = false
 ): Promise<void> {
   const bucketId =
     options.bucketId && options.bucketId.trim() !== ""
@@ -349,7 +373,7 @@ export async function moveLocalTaskToSidebar(
     updates.show_in_weekly = false;
     updates.assigned_date = null;
   }
-  await updateLocalTask(id, updates);
+  await updateLocalTask(id, updates, skipNotify);
 }
 
 export async function clearCompletedTasksForBucket(

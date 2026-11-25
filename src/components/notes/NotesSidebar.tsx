@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { ChevronLeft, ChevronRight, FilePlus2, Trash2 } from "lucide-react";
 import { useDatabaseSubscription } from "../../hooks/useDatabaseSubscription";
 import { useDebouncedTextDraft } from "../../hooks/useDebouncedTextDraft";
+import { LinkedTextArea } from "../common/LinkedTextArea";
 import {
   deleteNotePage,
   getAllNotePages,
@@ -55,6 +56,7 @@ export const NotesSidebar: React.FC<NotesSidebarProps> = ({
   const [gridSizePx, setGridSizePx] = useState<number>(17);
   const [notesBoxWidthPx, setNotesBoxWidthPx] = useState<number>(308);
   const [isScrollable, setIsScrollable] = useState<boolean>(false);
+  const [isNotesEditing, setIsNotesEditing] = useState<boolean>(false);
 
   const sidebarRef = useRef<HTMLDivElement | null>(null);
   const headerRef = useRef<HTMLDivElement | null>(null);
@@ -159,15 +161,20 @@ export const NotesSidebar: React.FC<NotesSidebarProps> = ({
   useEffect(() => {
     const ta = textareaRef.current;
     const scrollEl = scrollContainerRef.current;
-    if (!ta || !scrollEl) return;
+    if (!scrollEl) return;
 
     const containerH = scrollEl.clientHeight;
-    ta.style.height = "0px";
-    const contentH = ta.scrollHeight;
-    const exceedsThreshold = contentH > containerH;
-    setIsScrollable(exceedsThreshold);
-    ta.style.height = `${exceedsThreshold ? contentH : containerH}px`;
-  }, [draftContent, currentPageId, gridSizePx]);
+    if (ta) {
+      ta.style.height = "0px";
+      const contentH = ta.scrollHeight;
+      const exceedsThreshold = contentH > containerH;
+      setIsScrollable(exceedsThreshold);
+      ta.style.height = `${exceedsThreshold ? contentH : containerH}px`;
+    } else {
+      const contentH = canvasRef.current?.scrollHeight ?? scrollEl.scrollHeight;
+      setIsScrollable(contentH > containerH);
+    }
+  }, [draftContent, currentPageId, gridSizePx, isNotesEditing]);
 
   // Close right-click context menu on outside click
   useEffect(() => {
@@ -384,11 +391,12 @@ export const NotesSidebar: React.FC<NotesSidebarProps> = ({
                 onDeleteImage={handleDeleteNoteSticker}
               />
 
-              <textarea
-                ref={textareaRef}
+              <LinkedTextArea
+                textareaRef={textareaRef}
                 value={draftContent}
-                onChange={(e) => handleDraftChange(e.target.value)}
+                onChange={handleDraftChange}
                 onBlur={handleDraftBlur}
+                onEditingChange={setIsNotesEditing}
                 placeholder=""
                 className="block relative z-10 w-full bg-transparent border-0 outline-none resize-none px-3 py-2 text-[12px] leading-[17px] font-light text-hobo-ink overflow-hidden"
               />

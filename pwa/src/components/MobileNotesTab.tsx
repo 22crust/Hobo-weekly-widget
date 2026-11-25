@@ -9,6 +9,7 @@ import {
 } from "../db/plannerRepo";
 import { useDebouncedTextDraft } from "../hooks/useDebouncedTextDraft";
 import { NotePage } from "../types/planner";
+import { LinkedTextArea } from "./LinkedTextArea";
 
 export const MobileNotesTab: React.FC = () => {
   const [pages, setPages] = useState<NotePage[]>([]);
@@ -128,10 +129,10 @@ export const MobileNotesTab: React.FC = () => {
       </div>
 
       {/* Plain Hobonichi Grid Note Area (no extra lines) */}
-      <textarea
-        ref={textareaRef}
+      <LinkedTextArea
+        textareaRef={textareaRef}
         value={draftContent}
-        onChange={(e) => handleChange(e.target.value)}
+        onChange={handleChange}
         onBlur={handleBlur}
         className="flex-1 w-full py-1 bg-transparent text-[13.5px] leading-[20px] text-hobo-ink outline-none resize-none"
       />

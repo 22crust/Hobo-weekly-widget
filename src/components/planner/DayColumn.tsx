@@ -25,7 +25,11 @@ interface DayColumnProps {
   onToggleTask: (id: number, isCompleted: boolean) => void;
   onEditTaskTitle: (id: number, newTitle: string) => void;
   onDeleteTask: (id: number) => void;
-  onMoveTaskToDate: (id: number, targetDateStr: string) => void;
+  onMoveTaskToDate: (
+    id: number,
+    targetDateStr: string,
+    insertIndex?: number
+  ) => void;
   onMoveTaskToWeeklySidebar: (id: number) => void;
   onMoveTaskToLongTermSidebar: (id: number) => void;
 }
@@ -71,10 +75,10 @@ export const DayColumn: React.FC<DayColumnProps> = ({
     if (!el) return;
 
     const handlePointerDrop = (e: Event) => {
-      const custom = e as CustomEvent<{ taskId: number }>;
+      const custom = e as CustomEvent<{ taskId: number; insertIndex?: number }>;
       const taskId = custom.detail?.taskId ?? getActiveDraggedTaskId();
       if (taskId && taskId > 0) {
-        onMoveRef.current(taskId, dateStr);
+        onMoveRef.current(taskId, dateStr, custom.detail?.insertIndex);
         setActiveDraggedTaskId(null);
       }
     };

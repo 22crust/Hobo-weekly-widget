@@ -10,6 +10,7 @@ import {
 } from "../../../shared/buckets";
 import { useDebouncedTextDraft } from "../hooks/useDebouncedTextDraft";
 import { LocalTask } from "../types/planner";
+import { LinkedTextArea } from "./LinkedTextArea";
 import { MobileTaskItem } from "./MobileTaskItem";
 
 interface MobileBucketTextEditorProps {
@@ -35,11 +36,11 @@ const MobileBucketTextEditor: React.FC<MobileBucketTextEditorProps> = ({
     });
 
   return (
-    <textarea
-      ref={textareaRef}
+    <LinkedTextArea
+      textareaRef={textareaRef}
       rows={4}
       value={draft}
-      onChange={(e) => handleChange(e.target.value)}
+      onChange={handleChange}
       onBlur={handleBlur}
       className="w-full py-1 bg-transparent text-[13.5px] leading-[20px] text-hobo-ink outline-none resize-y border-0"
     />

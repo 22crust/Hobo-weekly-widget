@@ -124,6 +124,33 @@ export async function getAllLocalTasks(): Promise<LocalTask[]> {
   }));
 }
 
+function compareSidebarTasks(a: LocalTask, b: LocalTask): number {
+  if (a.is_completed !== b.is_completed) {
+    return a.is_completed ? 1 : -1;
+  }
+  if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
+  if (a.created_at !== b.created_at) {
+    return a.created_at.localeCompare(b.created_at);
+  }
+  return a.id - b.id;
+}
+
+function compareDatedTasks(a: LocalTask, b: LocalTask): number {
+  if ((a.assigned_date || "") !== (b.assigned_date || "")) {
+    return (a.assigned_date || "").localeCompare(b.assigned_date || "");
+  }
+  if (a.is_completed !== b.is_completed) {
+    return a.is_completed ? 1 : -1;
+  }
+  if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
+  if ((a.start_time || "") !== (b.start_time || "")) {
+    if (!a.start_time) return -1;
+    if (!b.start_time) return 1;
+    return a.start_time.localeCompare(b.start_time);
+  }
+  return a.id - b.id;
+}
+
 export async function getTasksForWeekRange(
   startDate: string,
   endDate: string
@@ -138,13 +165,7 @@ export async function getTasksForWeekRange(
         t.assigned_date >= startDate &&
         t.assigned_date <= endDate
     )
-    .sort((a, b) => {
-      if ((a.assigned_date || "") !== (b.assigned_date || "")) {
-        return (a.assigned_date || "").localeCompare(b.assigned_date || "");
-      }
-      if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
-      return a.created_at.localeCompare(b.created_at);
-    });
+    .sort(compareDatedTasks);
 }
 
 export async function getWeeklySidebarTasks(
@@ -159,20 +180,14 @@ export async function getWeeklySidebarTasks(
         !t.is_long_term &&
         t.assigned_week_start === weekStart
     )
-    .sort((a, b) => {
-      if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
-      return a.created_at.localeCompare(b.created_at);
-    });
+    .sort(compareSidebarTasks);
 }
 
 export async function getLongTermSidebarTasks(): Promise<LocalTask[]> {
   const all = await getAllLocalTasks();
   return all
     .filter((t) => isRecordActive(t) && t.show_in_sidebar && t.is_long_term)
-    .sort((a, b) => {
-      if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
-      return a.created_at.localeCompare(b.created_at);
-    });
+    .sort(compareSidebarTasks);
 }
 
 export async function createLocalTask(
@@ -225,7 +240,8 @@ export async function createLocalTask(
 
 export async function updateLocalTask(
   syncId: string,
-  updates: UpdateLocalTaskInput
+  updates: UpdateLocalTaskInput,
+  skipNotify = false
 ): Promise<void> {
   const existing = await getByKeyFromStore<LocalTask>("tasks", syncId);
   if (!existing) return;
@@ -240,7 +256,30 @@ export async function updateLocalTask(
   };
 
   await putInStore("tasks", nextTask);
-  notifyDatabaseUpdated("local_tasks:update");
+  if (!skipNotify) {
+    notifyDatabaseUpdated("local_tasks:update");
+  }
+}
+
+export async function reorderLocalTasks(
+  orderedSyncIds: string[]
+): Promise<void> {
+  if (orderedSyncIds.length === 0) return;
+  const nowIso = new Date().toISOString();
+  for (let i = 0; i < orderedSyncIds.length; i++) {
+    const existing = await getByKeyFromStore<LocalTask>(
+      "tasks",
+      orderedSyncIds[i]
+    );
+    if (!existing) continue;
+    await putInStore("tasks", {
+      ...existing,
+      sort_order: i + 1,
+      updated_at: nowIso,
+      deleted_at: null,
+    });
+  }
+  notifyDatabaseUpdated("local_tasks:reorder");
 }
 
 export async function deleteLocalTask(syncId: string): Promise<void> {

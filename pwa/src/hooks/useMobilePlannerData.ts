@@ -1,5 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { addDays, addWeeks, endOfMonth, format, parseISO, startOfMonth, startOfWeek, subWeeks } from "date-fns";
+import {
+  insertItemAtOrderIndex,
+  mergeReorderedTaskGroup,
+} from "../../../shared/taskDragDrop";
 import { onDatabaseUpdated } from "../db/indexedDb";
 import {
   clearCompletedLongTermSidebarTasks,
@@ -20,6 +24,7 @@ import {
   getLongTermSidebarTasks,
   getTasksForWeekRange,
   getWeeklySidebarTasks,
+  reorderLocalTasks,
   saveLocalEventAllFuture,
   saveLocalEventThisOnly,
   setBucketTextEntry,
@@ -194,6 +199,115 @@ export function useMobilePlannerData(
     }
   }, [reloadData]);
 
+  const tasksSnapshotRef = useRef({
+    datedTasks,
+    weeklySidebarTasks,
+    longTermSidebarTasks,
+  });
+  tasksSnapshotRef.current = {
+    datedTasks,
+    weeklySidebarTasks,
+    longTermSidebarTasks,
+  };
+
+  const actionsMoveToBucket = useCallback(
+    async (
+      syncId: string,
+      bucketId: string,
+      scope: BucketScope,
+      insertIndex?: number
+    ) => {
+      const snap = tasksSnapshotRef.current;
+      const all = [
+        ...snap.datedTasks,
+        ...snap.weeklySidebarTasks,
+        ...snap.longTermSidebarTasks,
+      ];
+      const target = all.find((t) => t.sync_id === syncId);
+      const isPersistent = scope === "persistent";
+      const targetBucket = (t: LocalTask) =>
+        t.bucket_id || (t.is_long_term ? "long_term" : "weekly");
+      const isSameBucket =
+        target !== undefined &&
+        target.show_in_sidebar &&
+        target.is_long_term === isPersistent &&
+        targetBucket(target) === bucketId &&
+        (isPersistent || target.assigned_week_start === weekStartDate);
+
+      let orderedSyncIds: string[] = [];
+      if (target) {
+        const moved: LocalTask = {
+          ...target,
+          assigned_date: null,
+          ...(scope === "weekly" ? { assigned_week_start: weekStartDate } : {}),
+          is_long_term: isPersistent,
+          bucket_id: bucketId,
+          show_in_weekly: false,
+          show_in_sidebar: true,
+        };
+        const sourceList = isPersistent
+          ? snap.longTermSidebarTasks
+          : snap.weeklySidebarTasks;
+        const group = sourceList.filter(
+          (t) =>
+            targetBucket(t) === bucketId &&
+            t.is_completed === moved.is_completed
+        );
+        const reorderedGroup = insertItemAtOrderIndex(
+          group,
+          moved,
+          (t) => t.sync_id,
+          insertIndex
+        ).map((t, idx) => ({ ...t, sort_order: idx + 1 }));
+        orderedSyncIds = reorderedGroup.map((t) => t.sync_id);
+
+        setDatedTasks((prev) => prev.filter((t) => t.sync_id !== syncId));
+        const replaceInList = (prev: LocalTask[]) =>
+          mergeReorderedTaskGroup(
+            prev,
+            syncId,
+            (t) => t.sync_id,
+            (t) =>
+              targetBucket(t) === bucketId &&
+              t.is_completed === moved.is_completed,
+            reorderedGroup
+          );
+        if (isPersistent) {
+          setWeeklySidebarTasks((prev) =>
+            prev.filter((t) => t.sync_id !== syncId)
+          );
+          setLongTermSidebarTasks(replaceInList);
+        } else {
+          setLongTermSidebarTasks((prev) =>
+            prev.filter((t) => t.sync_id !== syncId)
+          );
+          setWeeklySidebarTasks(replaceInList);
+        }
+      }
+
+      const shouldReorder =
+        target !== undefined && (insertIndex !== undefined || !isSameBucket);
+      if (!isSameBucket) {
+        await updateLocalTask(
+          syncId,
+          {
+            assigned_date: null,
+            ...(scope === "weekly" ? { assigned_week_start: weekStartDate } : {}),
+            is_long_term: isPersistent,
+            bucket_id: bucketId,
+            show_in_weekly: false,
+            show_in_sidebar: true,
+          },
+          shouldReorder
+        );
+      }
+      if (shouldReorder && orderedSyncIds.length > 0) {
+        await reorderLocalTasks(orderedSyncIds);
+      }
+    },
+    [weekStartDate]
+  );
+
   const actions = useMemo(
     () => ({
       refreshNow,
@@ -210,47 +324,109 @@ export function useMobilePlannerData(
       deleteTask: async (syncId: string) => {
         await deleteLocalTask(syncId);
       },
-      moveTaskToDate: async (syncId: string, dateStr: string) => {
-        const ws = format(startOfWeek(parseISO(dateStr), { weekStartsOn: 1 }), "yyyy-MM-dd");
-        await updateLocalTask(syncId, {
-          assigned_date: dateStr,
-          assigned_week_start: ws,
-          is_long_term: false,
-          show_in_weekly: true,
-          show_in_sidebar: false,
-        });
+      moveTaskToDate: async (
+        syncId: string,
+        dateStr: string,
+        insertIndex?: number
+      ) => {
+        const snap = tasksSnapshotRef.current;
+        const all = [
+          ...snap.datedTasks,
+          ...snap.weeklySidebarTasks,
+          ...snap.longTermSidebarTasks,
+        ];
+        const target = all.find((t) => t.sync_id === syncId);
+        const isSameDay =
+          target?.assigned_date === dateStr &&
+          target.show_in_weekly &&
+          !target.is_long_term;
+        const ws = format(
+          startOfWeek(parseISO(dateStr), { weekStartsOn: 1 }),
+          "yyyy-MM-dd"
+        );
+
+        let orderedSyncIds: string[] = [];
+        if (target) {
+          const moved: LocalTask = {
+            ...target,
+            assigned_date: dateStr,
+            assigned_week_start: ws,
+            is_long_term: false,
+            show_in_weekly: true,
+            show_in_sidebar: false,
+          };
+          const group = snap.datedTasks.filter(
+            (t) =>
+              t.assigned_date === dateStr &&
+              t.is_completed === moved.is_completed
+          );
+          const reorderedGroup = insertItemAtOrderIndex(
+            group,
+            moved,
+            (t) => t.sync_id,
+            insertIndex
+          ).map((t, idx) => ({ ...t, sort_order: idx + 1 }));
+          orderedSyncIds = reorderedGroup.map((t) => t.sync_id);
+
+          setDatedTasks((prev) =>
+            mergeReorderedTaskGroup(
+              prev,
+              syncId,
+              (t) => t.sync_id,
+              (t) =>
+                t.assigned_date === dateStr &&
+                t.is_completed === moved.is_completed,
+              reorderedGroup
+            )
+          );
+          setWeeklySidebarTasks((prev) =>
+            prev.filter((t) => t.sync_id !== syncId)
+          );
+          setLongTermSidebarTasks((prev) =>
+            prev.filter((t) => t.sync_id !== syncId)
+          );
+        }
+
+        const shouldReorder =
+          target !== undefined && (insertIndex !== undefined || !isSameDay);
+        if (!isSameDay) {
+          await updateLocalTask(
+            syncId,
+            {
+              assigned_date: dateStr,
+              assigned_week_start: ws,
+              is_long_term: false,
+              show_in_weekly: true,
+              show_in_sidebar: false,
+            },
+            shouldReorder
+          );
+        }
+        if (shouldReorder && orderedSyncIds.length > 0) {
+          await reorderLocalTasks(orderedSyncIds);
+        }
       },
-      moveTaskToWeeklySidebar: async (syncId: string) => {
-        await updateLocalTask(syncId, {
-          assigned_date: null,
-          assigned_week_start: weekStartDate,
-          is_long_term: false,
-          show_in_weekly: false,
-          show_in_sidebar: true,
-        });
+      moveTaskToWeeklySidebar: async (syncId: string, insertIndex?: number) => {
+        await actionsMoveToBucket(syncId, "weekly", "weekly", insertIndex);
       },
-      moveTaskToLongTermSidebar: async (syncId: string) => {
-        await updateLocalTask(syncId, {
-          assigned_date: null,
-          is_long_term: true,
-          bucket_id: "long_term",
-          show_in_weekly: false,
-          show_in_sidebar: true,
-        });
+      moveTaskToLongTermSidebar: async (
+        syncId: string,
+        insertIndex?: number
+      ) => {
+        await actionsMoveToBucket(
+          syncId,
+          "long_term",
+          "persistent",
+          insertIndex
+        );
       },
       moveTaskToBucket: async (
         syncId: string,
         bucketId: string,
-        scope: BucketScope
+        scope: BucketScope,
+        insertIndex?: number
       ) => {
-        await updateLocalTask(syncId, {
-          assigned_date: null,
-          ...(scope === "weekly" ? { assigned_week_start: weekStartDate } : {}),
-          is_long_term: scope === "persistent",
-          bucket_id: bucketId,
-          show_in_weekly: false,
-          show_in_sidebar: true,
-        });
+        await actionsMoveToBucket(syncId, bucketId, scope, insertIndex);
       },
       clearCompletedForBucket: async (
         bucketId: string,
@@ -333,7 +509,7 @@ export function useMobilePlannerData(
         }
       },
     }),
-    [refreshNow, weekStartDate]
+    [actionsMoveToBucket, refreshNow, weekStartDate]
   );
 
   return {

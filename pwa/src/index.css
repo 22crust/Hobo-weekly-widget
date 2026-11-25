@@ -45,6 +45,26 @@ body,
   height: 0;
 }
 
+[data-drop-indicator="before"]::before,
+[data-drop-indicator="after"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background-color: rgb(var(--hobo-accent-rgb) / 0.5);
+  pointer-events: none;
+  z-index: 20;
+}
+
+[data-drop-indicator="before"]::before {
+  top: -0.5px;
+}
+
+[data-drop-indicator="after"]::after {
+  bottom: -0.5px;
+}
+
 .safe-top {
   padding-top: env(safe-area-inset-top, 0px);
 }

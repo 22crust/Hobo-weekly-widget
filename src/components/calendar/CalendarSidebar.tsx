@@ -34,6 +34,7 @@ interface CalendarSidebarProps {
   onHoverChange?: (
     cursor: { xPct: number; yPct: number } | null
   ) => void;
+  onJumpToDate?: (dateStr: string) => void;
 }
 
 /**
@@ -43,6 +44,7 @@ interface CalendarSidebarProps {
  */
 export const CalendarSidebar: React.FC<CalendarSidebarProps> = ({
   onHoverChange,
+  onJumpToDate,
 }) => {
   const [currentMonth, setCurrentMonth] = useState<Date>(() => new Date());
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
@@ -193,6 +195,7 @@ export const CalendarSidebar: React.FC<CalendarSidebarProps> = ({
           currentMonth={currentMonth}
           selectedDate={selectedDate}
           onSelectDate={handleSelectDate}
+          onJumpToDate={onJumpToDate}
           onPrevMonth={() => setCurrentMonth((m) => subMonths(m, 1))}
           onNextMonth={() => setCurrentMonth((m) => addMonths(m, 1))}
           onResetToday={handleResetToday}

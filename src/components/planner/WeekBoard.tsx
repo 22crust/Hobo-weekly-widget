@@ -66,13 +66,22 @@ interface WeekBoardProps {
   onToggleTask: (id: number, isCompleted: boolean) => void;
   onEditTaskTitle: (id: number, newTitle: string) => void;
   onDeleteTask: (id: number) => void;
-  onMoveTaskToDate: (id: number, targetDateStr: string) => void;
+  onMoveTaskToDate: (
+    id: number,
+    targetDateStr: string,
+    insertIndex?: number
+  ) => void;
   onMoveTaskToWeeklySidebar: (id: number) => void;
   onMoveTaskToLongTermSidebar: (id: number) => void;
   onMigrateTaskToPrevWeek: (id: number) => void;
   onMigrateTaskToNextWeek: (id: number) => void;
   onAddTaskInBucket?: (bucketId: string, scope: BucketScope, title: string) => void;
-  onMoveTaskToBucket?: (taskId: number, bucketId: string, scope: BucketScope) => void;
+  onMoveTaskToBucket?: (
+    taskId: number,
+    bucketId: string,
+    scope: BucketScope,
+    insertIndex?: number
+  ) => void;
   onClearCompletedInBucket?: (bucketId: string, scope: BucketScope) => void;
   onCreateBucket?: (
     title: string,
@@ -652,7 +661,7 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
     if (!tasksEl) return;
 
     const handleBucketPointerDrop = (e: Event) => {
-      const custom = e as CustomEvent<{ taskId: number }>;
+      const custom = e as CustomEvent<{ taskId: number; insertIndex?: number }>;
       const taskId = custom.detail?.taskId ?? getActiveDraggedTaskId();
       if (!taskId || taskId <= 0) return;
 
@@ -666,7 +675,12 @@ export const WeekBoard: React.FC<WeekBoardProps> = ({
         const scope: BucketScope =
           def?.scope ?? (bucketId === "long_term" ? "persistent" : "weekly");
         if (moveBucketRef.current) {
-          moveBucketRef.current(taskId, bucketId, scope);
+          moveBucketRef.current(
+            taskId,
+            bucketId,
+            scope,
+            custom.detail?.insertIndex
+          );
         } else if (scope === "persistent") {
           moveLongTermRef.current(taskId);
         } else {

@@ -81,6 +81,165 @@ function icalTimeToLocalDateString(icalTime: ICAL.Time, fallbackJsDate: Date): s
   return toLocalDateString(fallbackJsDate);
 }
 
+function parseLocalDateString(dateStr: string): Date {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return new Date(y, m - 1, d, 0, 0, 0, 0);
+}
+
+interface ExpandOccurrenceParams {
+  resultsByKey: Map<string, UpsertGoogleEventInput>;
+  keyPrefix: string;
+  uid: string;
+  sourceUrl: string;
+  calendarName: string;
+  title: string;
+  description: string | null;
+  location: string | null;
+  icalStart: ICAL.Time;
+  icalEnd: ICAL.Time | null | undefined;
+  startJs: Date;
+  endJs: Date;
+  windowStartDateStr: string;
+  windowEndDateStr: string;
+}
+
+/**
+ * Expands a single VEVENT occurrence across every local calendar day it spans.
+ * - All-day events treat iCalendar DTEND as exclusive (subtracting 1 day when > start).
+ * - Timed multi-day events emit startTime->23:59 on the first day, All Day on middle
+ *   days, and 00:00->endTime on the last day (unless endTime is exact local 00:00:00).
+ * - Day 0 preserves the legacy `${keyPrefix}${uid}_${startIso}` instance_key.
+ */
+function addExpandedOccurrenceDays(params: ExpandOccurrenceParams): void {
+  const {
+    resultsByKey,
+    keyPrefix,
+    uid,
+    sourceUrl,
+    calendarName,
+    title,
+    description,
+    location,
+    icalStart,
+    icalEnd,
+    startJs,
+    endJs,
+    windowStartDateStr,
+    windowEndDateStr,
+  } = params;
+
+  const isAllDay = Boolean(icalStart.isDate);
+  const startIso = startJs.toISOString();
+  const endIso = endJs.toISOString();
+  const startDayStr = icalTimeToLocalDateString(icalStart, startJs);
+
+  let inclusiveEndStr = startDayStr;
+  if (isAllDay) {
+    if (icalEnd) {
+      const rawEndDayStr = icalTimeToLocalDateString(icalEnd, endJs);
+      if (rawEndDayStr > startDayStr) {
+        inclusiveEndStr = toLocalDateString(
+          subDays(parseLocalDateString(rawEndDayStr), 1)
+        );
+      }
+    }
+  } else {
+    const rawEndDayStr = toLocalDateString(endJs);
+    const isExactLocalMidnight =
+      endJs.getHours() === 0 &&
+      endJs.getMinutes() === 0 &&
+      endJs.getSeconds() === 0 &&
+      endJs.getMilliseconds() === 0;
+    if (
+      endJs.getTime() > startJs.getTime() &&
+      isExactLocalMidnight &&
+      rawEndDayStr > startDayStr
+    ) {
+      inclusiveEndStr = toLocalDateString(
+        subDays(parseLocalDateString(rawEndDayStr), 1)
+      );
+    } else if (rawEndDayStr > startDayStr) {
+      inclusiveEndStr = rawEndDayStr;
+    }
+  }
+
+  const isMultiDay = inclusiveEndStr > startDayStr;
+  const baseInstanceKey = `${keyPrefix}${uid}_${startIso}`;
+  let currentDate = parseLocalDateString(startDayStr);
+  let dayIdx = 0;
+
+  while (dayIdx <= 400) {
+    const dayStr = toLocalDateString(currentDate);
+    if (dayStr > inclusiveEndStr) break;
+
+    if (dayStr >= windowStartDateStr && dayStr <= windowEndDateStr) {
+      const instanceKey =
+        dayIdx === 0 ? baseInstanceKey : `${baseInstanceKey}::${dayStr}`;
+      const dayMidnightIso = new Date(
+        currentDate.getFullYear(),
+        currentDate.getMonth(),
+        currentDate.getDate(),
+        0,
+        0,
+        0,
+        0
+      ).toISOString();
+      const dayEndOfDayIso = new Date(
+        currentDate.getFullYear(),
+        currentDate.getMonth(),
+        currentDate.getDate(),
+        23,
+        59,
+        0,
+        0
+      ).toISOString();
+
+      let dayAllDay: boolean;
+      let dayStartIso: string;
+      let dayEndIso: string;
+
+      if (isAllDay) {
+        dayAllDay = true;
+        dayStartIso = isMultiDay ? dayMidnightIso : startIso;
+        dayEndIso = isMultiDay ? dayEndOfDayIso : endIso;
+      } else if (!isMultiDay) {
+        dayAllDay = false;
+        dayStartIso = startIso;
+        dayEndIso = endIso;
+      } else if (dayStr === startDayStr) {
+        dayAllDay = false;
+        dayStartIso = startIso;
+        dayEndIso = dayEndOfDayIso;
+      } else if (dayStr === inclusiveEndStr) {
+        dayAllDay = false;
+        dayStartIso = dayMidnightIso;
+        dayEndIso = endIso;
+      } else {
+        dayAllDay = true;
+        dayStartIso = dayMidnightIso;
+        dayEndIso = dayEndOfDayIso;
+      }
+
+      resultsByKey.set(instanceKey, {
+        instance_key: instanceKey,
+        uid: uid || baseInstanceKey,
+        source_url: sourceUrl,
+        calendar_name: calendarName,
+        title,
+        description,
+        location,
+        start_time: dayStartIso,
+        end_time: dayEndIso,
+        event_date: dayStr,
+        is_all_day: dayAllDay,
+      });
+    }
+
+    currentDate = addDays(currentDate, 1);
+    dayIdx++;
+  }
+}
+
 /**
  * Normalizes a calendar URL:
  * Converts Apple iCloud's `webcal://` (and `webcals://`) to `https://`.
@@ -317,24 +476,21 @@ export function parseAndExpandIcsEvents(
           continue;
         }
 
-        const isAllDay = Boolean(event.startDate.isDate);
-        const startIso = startJs.toISOString();
-        const endIso = endJs.toISOString();
-        const eventDate = icalTimeToLocalDateString(event.startDate, startJs);
-        const instanceKey = `${keyPrefix}${event.uid}_${startIso}`;
-
-        resultsByKey.set(instanceKey, {
-          instance_key: instanceKey,
-          uid: event.uid || instanceKey,
-          source_url: sourceUrl,
-          calendar_name: calendarName,
+        addExpandedOccurrenceDays({
+          resultsByKey,
+          keyPrefix,
+          uid: event.uid,
+          sourceUrl,
+          calendarName,
           title: event.summary || "(No Title)",
           description: event.description || null,
           location: event.location || null,
-          start_time: startIso,
-          end_time: endIso,
-          event_date: eventDate,
-          is_all_day: isAllDay,
+          icalStart: event.startDate,
+          icalEnd: event.endDate,
+          startJs,
+          endJs,
+          windowStartDateStr: toLocalDateString(new Date(windowStartMs)),
+          windowEndDateStr: toLocalDateString(new Date(windowEndMs)),
         });
       } else {
         const iterator = event.iterator();
@@ -370,28 +526,22 @@ export function parseAndExpandIcsEvents(
             continue;
           }
 
-          const isAllDay = Boolean(details.startDate.isDate);
-          const startIso = startJs.toISOString();
-          const endIso = endJs.toISOString();
-          const eventDate = icalTimeToLocalDateString(
-            details.startDate,
-            startJs
-          );
-          const instanceKey = `${keyPrefix}${event.uid}_${startIso}`;
-
-          resultsByKey.set(instanceKey, {
-            instance_key: instanceKey,
-            uid: event.uid || instanceKey,
-            source_url: sourceUrl,
-            calendar_name: calendarName,
+          addExpandedOccurrenceDays({
+            resultsByKey,
+            keyPrefix,
+            uid: event.uid,
+            sourceUrl,
+            calendarName,
             title: details.item.summary || event.summary || "(No Title)",
             description:
               details.item.description || event.description || null,
             location: details.item.location || event.location || null,
-            start_time: startIso,
-            end_time: endIso,
-            event_date: eventDate,
-            is_all_day: isAllDay,
+            icalStart: details.startDate,
+            icalEnd: details.endDate,
+            startJs,
+            endJs,
+            windowStartDateStr: toLocalDateString(new Date(windowStartMs)),
+            windowEndDateStr: toLocalDateString(new Date(windowEndMs)),
           });
         }
       }

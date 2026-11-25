@@ -14,6 +14,7 @@ interface MonthGridProps {
   currentMonth: Date;
   selectedDate: string | null;
   onSelectDate: (dateStr: string) => void;
+  onJumpToDate?: (dateStr: string) => void;
   onPrevMonth: () => void;
   onNextMonth: () => void;
   onResetToday: () => void;
@@ -34,6 +35,7 @@ export const MonthGrid: React.FC<MonthGridProps> = ({
   currentMonth,
   selectedDate,
   onSelectDate,
+  onJumpToDate,
   onPrevMonth,
   onNextMonth,
   onResetToday,
@@ -119,6 +121,10 @@ export const MonthGrid: React.FC<MonthGridProps> = ({
               <div
                 key={dateStr}
                 onClick={() => onSelectDate(dateStr)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  onJumpToDate?.(dateStr);
+                }}
                 className={`relative h-11 border-r border-b border-hobo-lineDark flex flex-col items-start justify-between p-1 text-left transition-colors pointer-events-auto cursor-pointer hover:bg-hobo-Divide/40 ${
                   isToday ? "bg-hobo-redSoft" : ""
                 } ${

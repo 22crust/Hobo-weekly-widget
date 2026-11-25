@@ -1,6 +1,6 @@
 [package]
 name = "local-planner"
-version = "1.4.0"
+version = "1.4.1"
 description = "PC desktop calendar and weekly planner widgets"
 authors = ["Local Planner"]
 edition = "2021"

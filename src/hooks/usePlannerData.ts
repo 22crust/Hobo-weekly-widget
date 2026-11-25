@@ -28,9 +28,14 @@ import {
   migrateWeeklyTaskToWeek,
   moveLocalTaskToDate,
   moveLocalTaskToSidebar,
+  reorderLocalTasks,
   toggleLocalTaskCompletion,
   updateLocalTask,
 } from "../db/localTasksRepo";
+import {
+  insertItemAtOrderIndex,
+  mergeReorderedTaskGroup,
+} from "../../shared/taskDragDrop";
 import {
   countActiveTasksInBucket,
   countNonEmptyWeeksInTextBucket,
@@ -642,10 +647,17 @@ export function usePlannerData(
     moveTaskToDate: async (
       id: number,
       assignedDate: string,
-      keepInSidebar?: boolean
+      keepInSidebar?: boolean,
+      insertIndex?: number
     ) => {
       const all = [...datedTasks, ...weeklySidebarTasks, ...longTermSidebarTasks];
       const target = all.find((t) => t.id === id);
+      const isSameDay =
+        target?.assigned_date === assignedDate &&
+        target.show_in_weekly &&
+        !target.is_long_term;
+
+      let orderedIds: number[] = [];
       if (target) {
         const moved: LocalTask = {
           ...target,
@@ -653,17 +665,47 @@ export function usePlannerData(
           show_in_weekly: true,
           show_in_sidebar: Boolean(keepInSidebar),
         };
-        setDatedTasks((prev) => [
-          ...prev.filter((t) => t.id !== id),
+        const groupTasks = datedTasks.filter(
+          (t) =>
+            t.assigned_date === assignedDate &&
+            t.is_completed === moved.is_completed
+        );
+        const reorderedGroup = insertItemAtOrderIndex(
+          groupTasks,
           moved,
-        ]);
+          (t) => String(t.id),
+          insertIndex
+        ).map((t, idx) => ({ ...t, sort_order: idx + 1 }));
+        orderedIds = reorderedGroup.map((t) => t.id);
+
+        setDatedTasks((prev) =>
+          mergeReorderedTaskGroup(
+            prev,
+            String(id),
+            (t) => String(t.id),
+            (t) =>
+              t.assigned_date === assignedDate &&
+              t.is_completed === moved.is_completed,
+            reorderedGroup
+          )
+        );
         if (!keepInSidebar) {
           setWeeklySidebarTasks((prev) => prev.filter((t) => t.id !== id));
           setLongTermSidebarTasks((prev) => prev.filter((t) => t.id !== id));
         }
       }
       try {
-        await moveLocalTaskToDate(id, assignedDate, keepInSidebar);
+        if (!isSameDay) {
+          await moveLocalTaskToDate(
+            id,
+            assignedDate,
+            keepInSidebar,
+            orderedIds.length > 0
+          );
+        }
+        if (orderedIds.length > 0) {
+          await reorderLocalTasks(orderedIds);
+        }
       } catch (e) {
         console.error("[usePlannerData] moveTaskToDate failed:", e);
       }
@@ -675,12 +717,23 @@ export function usePlannerData(
         isLongTerm: boolean;
         bucketId?: string;
         keepInDayColumn?: boolean;
+        insertIndex?: number;
       }
     ) => {
       const resolvedBucketId =
         options.bucketId || (options.isLongTerm ? "long_term" : "weekly");
       const all = [...datedTasks, ...weeklySidebarTasks, ...longTermSidebarTasks];
       const target = all.find((t) => t.id === id);
+      const targetBucket = (t: LocalTask) =>
+        t.bucket_id || (t.is_long_term ? "long_term" : "weekly");
+      const isSameBucket =
+        target !== undefined &&
+        target.show_in_sidebar &&
+        target.is_long_term === options.isLongTerm &&
+        targetBucket(target) === resolvedBucketId &&
+        (options.isLongTerm || target.assigned_week_start === options.weekStartDate);
+
+      let orderedIds: number[] = [];
       if (target) {
         const moved: LocalTask = {
           ...target,
@@ -693,28 +746,57 @@ export function usePlannerData(
           show_in_weekly: Boolean(options.keepInDayColumn),
           show_in_sidebar: true,
         };
+        const sourceList = options.isLongTerm
+          ? longTermSidebarTasks
+          : weeklySidebarTasks;
+        const groupTasks = sourceList.filter(
+          (t) =>
+            targetBucket(t) === resolvedBucketId &&
+            t.is_completed === moved.is_completed
+        );
+        const reorderedGroup = insertItemAtOrderIndex(
+          groupTasks,
+          moved,
+          (t) => String(t.id),
+          options.insertIndex
+        ).map((t, idx) => ({ ...t, sort_order: idx + 1 }));
+        orderedIds = reorderedGroup.map((t) => t.id);
+
         if (!options.keepInDayColumn) {
           setDatedTasks((prev) => prev.filter((t) => t.id !== id));
         }
+        const replaceInList = (prev: LocalTask[]) =>
+          mergeReorderedTaskGroup(
+            prev,
+            String(id),
+            (t) => String(t.id),
+            (t) =>
+              targetBucket(t) === resolvedBucketId &&
+              t.is_completed === moved.is_completed,
+            reorderedGroup
+          );
         if (options.isLongTerm) {
           setWeeklySidebarTasks((prev) => prev.filter((t) => t.id !== id));
-          setLongTermSidebarTasks((prev) => [
-            ...prev.filter((t) => t.id !== id),
-            moved,
-          ]);
+          setLongTermSidebarTasks(replaceInList);
         } else {
           setLongTermSidebarTasks((prev) => prev.filter((t) => t.id !== id));
-          setWeeklySidebarTasks((prev) => [
-            ...prev.filter((t) => t.id !== id),
-            moved,
-          ]);
+          setWeeklySidebarTasks(replaceInList);
         }
       }
       try {
-        await moveLocalTaskToSidebar(id, {
-          ...options,
-          bucketId: resolvedBucketId,
-        });
+        if (!isSameBucket) {
+          await moveLocalTaskToSidebar(
+            id,
+            {
+              ...options,
+              bucketId: resolvedBucketId,
+            },
+            orderedIds.length > 0
+          );
+        }
+        if (orderedIds.length > 0) {
+          await reorderLocalTasks(orderedIds);
+        }
       } catch (e) {
         console.error("[usePlannerData] moveTaskToSidebar failed:", e);
       }

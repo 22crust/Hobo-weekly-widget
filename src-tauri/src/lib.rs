@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, LogicalSize, Manager, PhysicalPosition, Position, Size, WindowEvent,
+    LogicalSize, Manager, PhysicalPosition, Position, Size, WindowEvent,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartManagerExt};
 use tauri_plugin_sql::{Migration, MigrationKind};
@@ -435,17 +435,94 @@ fn backup_planner_db(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+pub struct WindowModeState(pub Mutex<bool>);
+
+fn window_mode_prefs_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    app.path()
+        .app_local_data_dir()
+        .ok()
+        .map(|dir| dir.join("window-mode.json"))
+}
+
+fn load_normal_window_mode(app: &tauri::AppHandle) -> bool {
+    let Some(path) = window_mode_prefs_path(app) else {
+        return false;
+    };
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(&contents)
+        .ok()
+        .and_then(|v| v.get("normal_window").and_then(|b| b.as_bool()))
+        .unwrap_or(false)
+}
+
+fn save_normal_window_mode(app: &tauri::AppHandle, normal_window: bool) {
+    let Some(path) = window_mode_prefs_path(app) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let payload = serde_json::json!({ "normal_window": normal_window });
+    if let Ok(json) = serde_json::to_string(&payload) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+fn apply_window_mode(window: &tauri::WebviewWindow, normal_window: bool) {
+    let _ = window.set_always_on_bottom(!normal_window);
+    let _ = window.set_skip_taskbar(!normal_window);
+}
+
 fn toggle_window(app: &tauri::AppHandle, label: &str) {
     if let Some(window) = app.get_webview_window(label) {
         let is_visible = window.is_visible().unwrap_or(false);
         if is_visible {
             let _ = window.hide();
         } else {
-            let _ = window.set_always_on_bottom(true);
-            let _ = window.set_skip_taskbar(true);
+            let normal_window = app
+                .try_state::<WindowModeState>()
+                .and_then(|s| s.0.lock().ok().map(|g| *g))
+                .unwrap_or(false);
+            apply_window_mode(&window, normal_window);
             let _ = window.show();
+            let _ = window.unminimize();
+            if normal_window {
+                let _ = window.set_focus();
+            }
         }
     }
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let trimmed = url.trim();
+    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+        return Err("Only http/https URLs are allowed".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", trimmed])
+            .spawn()
+            .map_err(|e| format!("Failed to open URL: {e}"))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(trimmed)
+            .spawn()
+            .map_err(|e| format!("Failed to open URL: {e}"))?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(trimmed)
+            .spawn()
+            .map_err(|e| format!("Failed to open URL: {e}"))?;
+    }
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -458,6 +535,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             fetch_calendar_ics_feed,
             check_local_file_exists,
+            open_external_url,
             set_planner_visible_region,
             backup_planner_db,
             configure_github_sync,
@@ -509,16 +587,21 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            let initial_normal_window = load_normal_window_mode(app.handle());
+            app.manage(WindowModeState(Mutex::new(initial_normal_window)));
+
             if let Some(win) = app.get_webview_window("planner-widget") {
                 let _ = win.set_decorations(false);
                 let _ = win.set_shadow(false);
-                let _ = win.set_always_on_bottom(true);
-                let _ = win.set_skip_taskbar(true);
+                apply_window_mode(&win, initial_normal_window);
                 let _ = win.set_size(Size::Logical(LogicalSize::new(1440.0, 760.0)));
                 let _ = win.set_position(Position::Physical(PhysicalPosition::new(110, 100)));
                 apply_planner_region(&win, false, false, false);
                 let _ = win.show();
                 let _ = win.unminimize();
+                if initial_normal_window {
+                    let _ = win.set_focus();
+                }
             }
 
             let initial_autostart = app
@@ -532,18 +615,6 @@ pub fn run() {
             )
             .build(app)?;
 
-            let sync_now = MenuItemBuilder::with_id(
-                "sync_now",
-                "Sync Calendars Now",
-            )
-            .build(app)?;
-
-            let open_settings = MenuItemBuilder::with_id(
-                "open_settings",
-                "Settings...",
-            )
-            .build(app)?;
-
             let sep_1 = PredefinedMenuItem::separator(app)?;
 
             let launch_on_startup = CheckMenuItemBuilder::with_id(
@@ -553,6 +624,13 @@ pub fn run() {
             .checked(initial_autostart)
             .build(app)?;
 
+            let normal_window_mode = CheckMenuItemBuilder::with_id(
+                "normal_window_mode",
+                "Normal Window (Show in Taskbar)",
+            )
+            .checked(initial_normal_window)
+            .build(app)?;
+
             let sep_2 = PredefinedMenuItem::separator(app)?;
 
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
@@ -560,32 +638,22 @@ pub fn run() {
             let menu = MenuBuilder::new(app)
                 .items(&[
                     &toggle_plan,
-                    &sync_now,
-                    &open_settings,
                     &sep_1,
                     &launch_on_startup,
+                    &normal_window_mode,
                     &sep_2,
                     &quit,
                 ])
                 .build()?;
 
             let startup_item_for_closure = launch_on_startup.clone();
+            let window_mode_item_for_closure = normal_window_mode.clone();
 
             let mut tray_builder = TrayIconBuilder::new()
                 .menu(&menu)
                 .tooltip("Weekly Planner")
                 .on_menu_event(move |app_handle, event| match event.id().as_ref() {
                     "toggle_planner" => toggle_window(app_handle, "planner-widget"),
-                    "sync_now" => {
-                        let _ = app_handle.emit(TRIGGER_SYNC_EVENT, ());
-                    }
-                    "open_settings" => {
-                        if let Some(window) = app_handle.get_webview_window("planner-widget") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
-                        let _ = app_handle.emit(OPEN_SETTINGS_EVENT, ());
-                    }
                     "launch_on_startup" => {
                         let autolaunch = app_handle.autolaunch();
                         let currently_enabled = autolaunch.is_enabled().unwrap_or(false);
@@ -595,6 +663,32 @@ pub fn run() {
                         } else {
                             let _ = autolaunch.enable();
                             let _ = startup_item_for_closure.set_checked(true);
+                        }
+                    }
+                    "normal_window_mode" => {
+                        let next_mode = if let Some(state) =
+                            app_handle.try_state::<WindowModeState>()
+                        {
+                            if let Ok(mut guard) = state.0.lock() {
+                                *guard = !*guard;
+                                *guard
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+                        save_normal_window_mode(app_handle, next_mode);
+                        let _ = window_mode_item_for_closure.set_checked(next_mode);
+                        if let Some(window) =
+                            app_handle.get_webview_window("planner-widget")
+                        {
+                            apply_window_mode(&window, next_mode);
+                            if next_mode {
+                                let _ = window.show();
+                                let _ = window.unminimize();
+                                let _ = window.set_focus();
+                            }
                         }
                     }
                     "quit" => {

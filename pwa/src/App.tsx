@@ -96,22 +96,26 @@ export function App() {
 
   useEffect(() => {
     const handleTaskDrop = (e: Event) => {
-      const custom = e as CustomEvent<{ syncId: string; zone: string }>;
-      const { syncId, zone } = custom.detail || {};
+      const custom = e as CustomEvent<{
+        syncId: string;
+        zone: string;
+        insertIndex?: number;
+      }>;
+      const { syncId, zone, insertIndex } = custom.detail || {};
       if (!syncId || !zone) return;
       if (zone.startsWith("day:")) {
         const dateStr = zone.slice(4);
-        void actions.moveTaskToDate(syncId, dateStr);
+        void actions.moveTaskToDate(syncId, dateStr, insertIndex);
       } else if (zone.startsWith("bucket:")) {
         const bucketId = zone.slice("bucket:".length);
         const def = bucketDefinitions.find((b) => b.id === bucketId);
         const scope =
           def?.scope ?? (bucketId === "long_term" ? "persistent" : "weekly");
-        void actions.moveTaskToBucket(syncId, bucketId, scope);
+        void actions.moveTaskToBucket(syncId, bucketId, scope, insertIndex);
       } else if (zone === "weekly-sidebar") {
-        void actions.moveTaskToWeeklySidebar(syncId);
+        void actions.moveTaskToWeeklySidebar(syncId, insertIndex);
       } else if (zone === "long-term") {
-        void actions.moveTaskToLongTermSidebar(syncId);
+        void actions.moveTaskToLongTermSidebar(syncId, insertIndex);
       }
     };
     window.addEventListener("pwa:task-drop", handleTaskDrop);

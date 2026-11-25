@@ -2,6 +2,11 @@ import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ArrowLeft, ArrowRight, Check, MoreHorizontal, Trash2 } from "lucide-react";
 import { LocalTask } from "../types/planner";
+import {
+  applyTaskDropIndicator,
+  clearTaskDropIndicator,
+  computeTaskDropInsertion,
+} from "../../../shared/taskDragDrop";
 
 interface MobileTaskItemProps {
   task: LocalTask;
@@ -32,12 +37,15 @@ export const MobileTaskItem: React.FC<MobileTaskItemProps> = ({
   const isDraggingRef = useRef(false);
   const suppressClickRef = useRef(false);
   const hoveredZoneRef = useRef<HTMLElement | null>(null);
+  const indicatorTargetRef = useRef<HTMLElement | null>(null);
 
   const clearHoverHighlight = () => {
     if (hoveredZoneRef.current) {
       hoveredZoneRef.current.removeAttribute("data-drop-active");
       hoveredZoneRef.current = null;
     }
+    clearTaskDropIndicator(indicatorTargetRef.current);
+    indicatorTargetRef.current = null;
   };
 
   useEffect(() => {
@@ -118,11 +126,32 @@ export const MobileTaskItem: React.FC<MobileTaskItemProps> = ({
       setDragPos({ x: latestX, y: latestY });
       const zone = findDropZone(latestX, latestY);
       if (zone !== hoveredZoneRef.current) {
-        clearHoverHighlight();
+        if (hoveredZoneRef.current) {
+          hoveredZoneRef.current.removeAttribute("data-drop-active");
+        }
         if (zone) {
           zone.setAttribute("data-drop-active", "true");
           hoveredZoneRef.current = zone;
+        } else {
+          hoveredZoneRef.current = null;
         }
+      }
+      if (zone) {
+        const insertion = computeTaskDropInsertion(
+          zone,
+          latestY,
+          "data-task-sync-id",
+          task.sync_id,
+          task.is_completed
+        );
+        indicatorTargetRef.current = applyTaskDropIndicator(
+          indicatorTargetRef.current,
+          insertion.indicatorTarget,
+          insertion.indicatorPosition
+        );
+      } else {
+        clearTaskDropIndicator(indicatorTargetRef.current);
+        indicatorTargetRef.current = null;
       }
     };
 
@@ -140,10 +169,21 @@ export const MobileTaskItem: React.FC<MobileTaskItemProps> = ({
 
         const zone = findDropZone(dropX, dropY);
         const zoneKey = zone?.getAttribute("data-task-drop-zone");
-        if (zoneKey) {
+        if (zone && zoneKey) {
+          const insertion = computeTaskDropInsertion(
+            zone,
+            dropY,
+            "data-task-sync-id",
+            task.sync_id,
+            task.is_completed
+          );
           window.dispatchEvent(
             new CustomEvent("pwa:task-drop", {
-              detail: { syncId: task.sync_id, zone: zoneKey },
+              detail: {
+                syncId: task.sync_id,
+                zone: zoneKey,
+                insertIndex: insertion.insertIndex,
+              },
             })
           );
         }
@@ -172,6 +212,8 @@ export const MobileTaskItem: React.FC<MobileTaskItemProps> = ({
   return (
     <>
       <div
+        data-task-sync-id={task.sync_id}
+        data-task-completed={task.is_completed ? "1" : "0"}
         onPointerDown={handlePointerDown}
         className={`relative py-[1px] flex items-start gap-1.5 text-[12.5px] leading-[16px] group select-none ${
           dragPos ? "opacity-35" : ""

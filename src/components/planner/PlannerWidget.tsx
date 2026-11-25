@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { addWeeks, endOfWeek, format, startOfWeek, subWeeks } from "date-fns";
+import { addWeeks, endOfWeek, format, parseISO, startOfWeek, subWeeks } from "date-fns";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -529,6 +529,9 @@ export const PlannerWidget: React.FC = () => {
                 onHoverChange={(cursor) => {
                   calendarHoverRef.current = cursor;
                 }}
+                onJumpToDate={(dateStr) => {
+                  setCurrentWeekDate(parseISO(dateStr));
+                }}
               />
             )}
           </div>
@@ -575,8 +578,8 @@ export const PlannerWidget: React.FC = () => {
             onToggleTask={toggleTask}
             onEditTaskTitle={(id, title) => editTask(id, { title })}
             onDeleteTask={removeTask}
-            onMoveTaskToDate={(id, targetDateStr) =>
-              moveTaskToDate(id, targetDateStr)
+            onMoveTaskToDate={(id, targetDateStr, insertIndex) =>
+              moveTaskToDate(id, targetDateStr, undefined, insertIndex)
             }
             onMoveTaskToWeeklySidebar={(id) =>
               moveTaskToSidebar(id, {
@@ -607,11 +610,12 @@ export const PlannerWidget: React.FC = () => {
                 show_in_sidebar: true,
               })
             }
-            onMoveTaskToBucket={(id, bucketId, scope) =>
+            onMoveTaskToBucket={(id, bucketId, scope, insertIndex) =>
               moveTaskToSidebar(id, {
                 weekStartDate: scope === "persistent" ? null : weekStartStr,
                 isLongTerm: scope === "persistent",
                 bucketId,
+                insertIndex,
               })
             }
             onClearCompletedInBucket={(bucketId, scope) =>

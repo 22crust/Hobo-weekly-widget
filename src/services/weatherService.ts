@@ -42,9 +42,9 @@ export function saveTemperatureUnit(unit: TemperatureUnit): void {
 
 export function formatTemperature(celsius: number, unit: TemperatureUnit): string {
   if (unit === "F") {
-    return `${Math.round((celsius * 9) / 5 + 32)}°F`;
+    return `${Math.round((celsius * 9) / 5 + 32)}°`;
   }
-  return `${Math.round(celsius)}°C`;
+  return `${Math.round(celsius)}°`;
 }
 
 /**

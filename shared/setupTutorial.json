@@ -21,7 +21,7 @@
     {
       "heading": "Mobile app setup",
       "steps": [
-        "Open 22crust.github.io/Hobo-weekly-widget on your phone.",
+        "Open https://22crust.github.io/Hobo-weekly-widget/ on your phone.",
         "APPLE: Share > Add to Home Screen > Add.",
         "ANDROID: Three dots > Add to Home screen or Install App.",
         "Open planner settings, switch to GitHub Backup & Sync, enter the exact same GitHub username, repository name, and token as in the desktop widget (explained below)."

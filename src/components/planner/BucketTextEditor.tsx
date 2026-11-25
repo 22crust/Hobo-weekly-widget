@@ -1,5 +1,6 @@
 import React from "react";
 import { useDebouncedTextDraft } from "../../hooks/useDebouncedTextDraft";
+import { LinkedTextArea } from "../common/LinkedTextArea";
 
 interface BucketTextEditorProps {
   bucketId: string;
@@ -29,10 +30,10 @@ export const BucketTextEditor: React.FC<BucketTextEditorProps> = ({
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto pointer-events-auto">
-      <textarea
-        ref={textareaRef}
+      <LinkedTextArea
+        textareaRef={textareaRef}
         value={draft}
-        onChange={(e) => handleChange(e.target.value)}
+        onChange={handleChange}
         onBlur={handleBlur}
         placeholder=""
         className="block w-full min-h-full bg-transparent border-0 outline-none resize-none py-0.5 text-[12px] leading-[17px] font-light text-hobo-ink"
